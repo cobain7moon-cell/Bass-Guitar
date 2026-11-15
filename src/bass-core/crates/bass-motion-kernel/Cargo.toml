@@ -1,0 +1,17 @@
+[package]
+name = "bass-motion-kernel"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+bass-types = { path = "../bass-types" }
+bass-motion = { path = "../bass-motion" }
+bass-hal = { path = "../bass-hal" }
+bass-logger = { path = "../bass-logger" }
+
+tokio = { workspace = true, features = ["sync", "time"] }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true, features = ["derive"] }

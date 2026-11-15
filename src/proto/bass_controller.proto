@@ -1,0 +1,423 @@
+syntax = "proto3";
+
+package bass.controller.v1;
+
+enum OpMode {
+  OP_MODE_UNSPECIFIED = 0;
+  OP_MODE_MANUAL = 1;
+  OP_MODE_AUTO = 2;
+}
+
+enum InterpreterState {
+  INTERPRETER_STATE_UNSPECIFIED = 0;
+  INTERPRETER_STATE_IDLE = 1;
+  INTERPRETER_STATE_READY = 2;
+  INTERPRETER_STATE_RUNNING = 3;
+  INTERPRETER_STATE_PAUSED = 4;
+  INTERPRETER_STATE_COMPLETED = 5;
+  INTERPRETER_STATE_ERROR = 6;
+}
+
+enum MotionState {
+  MOTION_STATE_UNSPECIFIED = 0;
+  MOTION_STATE_IDLE = 1;
+  MOTION_STATE_MOVEL = 2;
+  MOTION_STATE_MOVEJ = 3;
+  MOTION_STATE_JOG = 4;
+}
+
+enum CoordSystem {
+  COORD_SYSTEM_UNSPECIFIED = 0;
+  COORD_SYSTEM_CARTESIAN = 1;
+  COORD_SYSTEM_JOINT = 2;
+}
+
+enum TaskControlCommand {
+  TASK_CONTROL_COMMAND_UNSPECIFIED = 0;
+  TASK_CONTROL_COMMAND_RUN = 1;
+  TASK_CONTROL_COMMAND_STEP = 2;
+  TASK_CONTROL_COMMAND_PAUSE = 3;
+  TASK_CONTROL_COMMAND_RESET = 4;
+}
+
+enum DiagnosticSeverity {
+  DIAGNOSTIC_SEVERITY_UNSPECIFIED = 0;
+  DIAGNOSTIC_SEVERITY_INFO = 1;
+  DIAGNOSTIC_SEVERITY_WARNING = 2;
+  DIAGNOSTIC_SEVERITY_ERROR = 3;
+}
+
+enum CompileStage {
+  COMPILE_STAGE_UNSPECIFIED = 0;
+  COMPILE_STAGE_SYNTAX = 1;
+  COMPILE_STAGE_SEMANTIC = 2;
+  COMPILE_STAGE_LOWERING = 3;
+  COMPILE_STAGE_CODEGEN = 4;
+}
+
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_INFO = 1;
+  LOG_LEVEL_WARN = 2;
+  LOG_LEVEL_ERROR = 3;
+}
+
+enum LogCategory {
+  LOG_CATEGORY_UNSPECIFIED = 0;
+  LOG_CATEGORY_SYSTEM = 1;
+  LOG_CATEGORY_SAFETY = 2;
+  LOG_CATEGORY_MOTION = 3;
+  LOG_CATEGORY_FIELDBUS = 4;
+  LOG_CATEGORY_COMPILER = 5;
+  LOG_CATEGORY_SCRIPT = 6;
+}
+
+enum LogExportFormat {
+  LOG_EXPORT_FORMAT_UNSPECIFIED = 0;
+  LOG_EXPORT_FORMAT_JSONL = 1;
+  LOG_EXPORT_FORMAT_TEXT = 2;
+}
+
+message Pose6D {
+  double x = 1;
+  double y = 2;
+  double z = 3;
+  double a = 4;
+  double b = 5;
+  double c = 6;
+}
+
+message Joints6D {
+  repeated double values = 1;
+}
+
+message RobotStateSnapshot {
+  OpMode op_mode = 1;
+  bool drives_on = 2;
+  bool emergency_stop = 3;
+  uint32 speed_override = 4;
+  InterpreterState interpreter_state = 5;
+  MotionState motion_state = 6;
+  string active_program = 7;
+  uint32 current_line = 8;
+  repeated double joint_actual = 9;
+  repeated double joint_torque = 10;
+  Pose6D cart_actual = 11;
+  repeated bool digital_out = 12;
+  bool plant_online = 13;
+  double rtt_ms = 14;
+  uint64 cycle_count = 15;
+  uint64 sim_tick = 16;
+  string status_message = 17;
+}
+
+message SimpleResponse {
+  bool ok = 1;
+  string error = 2;
+}
+
+message GetStateRequest {}
+
+message SubscribeTelemetryRequest {
+  uint32 interval_ms = 1;
+}
+
+message SetModeRequest {
+  OpMode mode = 1;
+}
+
+message SetModeResponse {
+  bool ok = 1;
+  OpMode mode = 2;
+  string error = 3;
+}
+
+message SetDrivesPowerRequest {
+  bool drives_on = 1;
+}
+
+message SetDrivesPowerResponse {
+  bool ok = 1;
+  bool drives_on = 2;
+  string error = 3;
+}
+
+message SetEmergencyStopRequest {
+  bool emergency_stop = 1;
+}
+
+message SetEmergencyStopResponse {
+  bool ok = 1;
+  bool emergency_stop = 2;
+  string error = 3;
+}
+
+message SetSpeedOverrideRequest {
+  uint32 speed_override = 1;
+}
+
+message SetSpeedOverrideResponse {
+  bool ok = 1;
+  uint32 speed_override = 2;
+  string error = 3;
+}
+
+message SetDigitalOutRequest {
+  uint32 pin = 1;
+  bool state = 2;
+}
+
+message SetDigitalOutResponse {
+  bool ok = 1;
+  repeated bool digital_out = 2;
+  string error = 3;
+}
+
+message JogCommand {
+  CoordSystem coord_system = 1;
+  string axis = 2;
+  double direction = 3;
+  double step_size = 4;
+}
+
+message JogStopRequest {}
+
+message ListProgramsRequest {}
+
+message ListProgramsResponse {
+  repeated string programs = 1;
+}
+
+message GetProgramRequest {
+  string name = 1;
+}
+
+message GetProgramResponse {
+  bool ok = 1;
+  string name = 2;
+  string code = 3;
+  string error = 4;
+}
+
+message CompileDiagnostic {
+  DiagnosticSeverity severity = 1;
+  CompileStage stage = 2;
+  uint32 line = 3;
+  uint32 column = 4;
+  string message = 5;
+}
+
+message IrInstruction {
+  uint32 seq = 1;
+  uint32 line = 2;
+  string summary = 3;
+  string op_json = 4;
+}
+
+message IrStats {
+  uint32 total_instructions = 1;
+  uint32 motion_count = 2;
+  uint32 io_count = 3;
+  uint32 wait_count = 4;
+  uint32 static_ik_checked = 5;
+  uint32 symbol_count = 6;
+}
+
+message RobotProgramIR {
+  string program_name = 1;
+  string source_hash = 2;
+  repeated IrInstruction instructions = 3;
+  IrStats stats = 4;
+}
+
+message CompileReport {
+  bool ok = 1;
+  string program_name = 2;
+  string source_hash = 3;
+  repeated CompileDiagnostic diagnostics = 4;
+  RobotProgramIR ir = 5;
+}
+
+message SaveProgramRequest {
+  string name = 1;
+  string code = 2;
+}
+
+message SaveProgramResponse {
+  bool ok = 1;
+  uint32 error_line = 2;
+  string error_message = 3;
+  CompileReport report = 4;
+}
+
+message CompileProgramRequest {
+  string name = 1;
+  optional string code = 2;
+}
+
+message ControlTaskRequest {
+  TaskControlCommand command = 1;
+  string program_name = 2;
+}
+
+message LogEntry {
+  uint64 id = 1;
+  uint64 timestamp_ms = 2;
+  string timestamp_iso = 3;
+  LogLevel level = 4;
+  LogCategory category = 5;
+  string source = 6;
+  string message = 7;
+}
+
+message QueryLogsRequest {
+  LogLevel level = 1;
+  LogCategory category = 2;
+  string q = 3;
+  optional uint64 after_id = 4;
+  optional uint32 limit = 5;
+}
+
+message QueryLogsResponse {
+  bool ok = 1;
+  uint64 latest_id = 2;
+  uint32 total = 3;
+  repeated LogEntry entries = 4;
+  string error = 5;
+}
+
+message ExportLogsRequest {
+  LogLevel level = 1;
+  LogCategory category = 2;
+  string q = 3;
+  LogExportFormat format = 4;
+}
+
+message ExportLogsResponse {
+  bool ok = 1;
+  string filename = 2;
+  string content_type = 3;
+  string content = 4;
+  string error = 5;
+}
+
+message ClearLogsRequest {}
+
+// 控制器管理与实时状态服务（核心服务端 -> 示教器客户端）
+service ControllerService {
+  rpc GetState(GetStateRequest) returns (RobotStateSnapshot);
+  rpc SubscribeTelemetry(SubscribeTelemetryRequest) returns (stream RobotStateSnapshot);
+  rpc SetMode(SetModeRequest) returns (SetModeResponse);
+  rpc SetDrivesPower(SetDrivesPowerRequest) returns (SetDrivesPowerResponse);
+  rpc SetEmergencyStop(SetEmergencyStopRequest) returns (SetEmergencyStopResponse);
+  rpc SetSpeedOverride(SetSpeedOverrideRequest) returns (SetSpeedOverrideResponse);
+  rpc SetDigitalOut(SetDigitalOutRequest) returns (SetDigitalOutResponse);
+  rpc JogStep(JogCommand) returns (SimpleResponse);
+  rpc JogHold(JogCommand) returns (SimpleResponse);
+  rpc JogStop(JogStopRequest) returns (SimpleResponse);
+}
+
+// 任务管理、脚本编译与执行调度服务
+service TaskService {
+  rpc ListPrograms(ListProgramsRequest) returns (ListProgramsResponse);
+  rpc GetProgram(GetProgramRequest) returns (GetProgramResponse);
+  rpc SaveProgram(SaveProgramRequest) returns (SaveProgramResponse);
+  rpc CompileProgram(CompileProgramRequest) returns (CompileReport);
+  rpc ControlTask(ControlTaskRequest) returns (SimpleResponse);
+}
+
+// 结构化日志检索与导出服务
+service LogService {
+  rpc QueryLogs(QueryLogsRequest) returns (QueryLogsResponse);
+  rpc ExportLogs(ExportLogsRequest) returns (ExportLogsResponse);
+  rpc ClearLogs(ClearLogsRequest) returns (SimpleResponse);
+}
+
+message MotionTelemetry {
+  bool drives_enabled = 1;
+  bool estop_active = 2;
+  uint32 speed_override = 3;
+  MotionState motion_state = 4;
+  bool paused = 5;
+  optional uint64 active_motion_id = 6;
+  repeated double joint_actual = 7;
+  repeated double joint_cmd = 8;
+  repeated double joint_velocity = 9;
+  repeated double joint_torque = 10;
+  Pose6D cart_actual = 11;
+  repeated bool digital_out = 12;
+  uint32 digital_in = 13;
+  bool plant_online = 14;
+  bool plant_fault_active = 15;
+  uint32 last_fault_code = 16;
+  double rtt_ms = 17;
+  uint64 cycle_count = 18;
+  uint64 sim_tick = 19;
+}
+
+enum MotionEventType {
+  MOTION_EVENT_TYPE_UNSPECIFIED = 0;
+  MOTION_EVENT_TYPE_COMPLETED = 1;
+  MOTION_EVENT_TYPE_FAILED = 2;
+  MOTION_EVENT_TYPE_SAFETY_TRIPPED = 3;
+  MOTION_EVENT_TYPE_PLANT_ONLINE_CHANGED = 4;
+  MOTION_EVENT_TYPE_FAULT_CLEARED = 5;
+}
+
+message MotionEvent {
+  MotionEventType event_type = 1;
+  uint64 motion_id = 2;
+  string message = 3;
+  uint32 fault_code = 4;
+  bool was_moving = 5;
+  bool plant_online = 6;
+  uint64 sim_tick = 7;
+}
+
+message GetMotionTelemetryRequest {}
+
+message SubscribeMotionEventsRequest {}
+
+message MoveLRequest {
+  Pose6D target = 1;
+  double vel_mm_s = 2;
+  bool wait_for_completion = 3;
+}
+
+message MoveJRequest {
+  oneof target {
+    Pose6D pose = 1;
+    Joints6D joints = 2;
+  }
+  double vel_deg_s = 3;
+  bool wait_for_completion = 4;
+}
+
+message MoveResponse {
+  bool ok = 1;
+  uint64 motion_id = 2;
+  string error = 3;
+}
+
+message SetMotionPausedRequest {
+  bool paused = 1;
+}
+
+message StopMotionRequest {}
+
+message ClearFaultRequest {}
+
+// 运动内核对外开放的 gRPC 运动能力服务（同进程高实时主链路 + 外部直接调用接口）
+service MotionService {
+  rpc GetMotionTelemetry(GetMotionTelemetryRequest) returns (MotionTelemetry);
+  rpc SubscribeMotionTelemetry(SubscribeTelemetryRequest) returns (stream MotionTelemetry);
+  rpc SubscribeMotionEvents(SubscribeMotionEventsRequest) returns (stream MotionEvent);
+  rpc MoveL(MoveLRequest) returns (MoveResponse);
+  rpc MoveJ(MoveJRequest) returns (MoveResponse);
+  rpc JogStep(JogCommand) returns (MoveResponse);
+  rpc JogHold(JogCommand) returns (SimpleResponse);
+  rpc JogStop(JogStopRequest) returns (SimpleResponse);
+  rpc SetMotionPaused(SetMotionPausedRequest) returns (SimpleResponse);
+  rpc StopMotion(StopMotionRequest) returns (SimpleResponse);
+  rpc ClearFault(ClearFaultRequest) returns (SimpleResponse);
+}

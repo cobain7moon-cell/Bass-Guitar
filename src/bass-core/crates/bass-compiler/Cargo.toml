@@ -1,0 +1,12 @@
+[package]
+name = "bass-compiler"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+bass-types = { path = "../bass-types" }
+bass-motion = { path = "../bass-motion" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rhai.workspace = true

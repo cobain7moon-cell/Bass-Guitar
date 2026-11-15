@@ -1,0 +1,41 @@
+# ===========================
+# Bass 1.0 .gitignore
+# ===========================
+
+# ----- Rust -----
+src/bass-core/target/
+target/
+**/*.rs.bk
+
+# ----- Node / Vue -----
+node_modules/
+src/bass-web/dist/
+runtime/**/__pycache__/
+runtime/instances/*/logs/*.jsonl
+dist/
+*.local
+
+# ----- Python -----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+.env
+
+# ----- 日志与临时文件 -----
+*.log
+*.tmp
+*.bak
+*.cache
+
+# ----- IDE 与 OS -----
+.idea/
+.vscode/settings.json
+Thumbs.db
+Desktop.ini
+.DS_Store

@@ -1,0 +1,8 @@
+[package]
+name = "bass-hal"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+bass-types = { path = "../bass-types" }
+thiserror.workspace = true

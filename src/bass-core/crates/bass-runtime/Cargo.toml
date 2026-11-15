@@ -1,0 +1,42 @@
+[package]
+name = "bass-runtime"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+bass-types = { path = "../bass-types" }
+bass-proto = { path = "../bass-proto" }
+bass-motion-kernel = { path = "../bass-motion-kernel" }
+bass-motion = { path = "../bass-motion" }
+bass-compiler = { path = "../bass-compiler" }
+bass-interpreter = { path = "../bass-interpreter" }
+bass-logger = { path = "../bass-logger" }
+
+tokio = { workspace = true, features = ["full"] }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+tonic-web = { workspace = true }
+tonic-prost = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true, features = ["fs", "cors"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+clap = { workspace = true, features = ["derive"] }
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+bass-hal = { path = "../bass-hal" }
+http-body-util.workspace = true
+prost.workspace = true
+
+[[bin]]
+name = "bass-runtime"
+path = "src/main.rs"
+
+[lib]
+name = "bass_runtime"
+path = "src/lib.rs"

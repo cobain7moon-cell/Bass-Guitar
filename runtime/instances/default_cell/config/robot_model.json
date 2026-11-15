@@ -1,0 +1,264 @@
+{
+  "schema_version": 1,
+  "robot_name": "UR5e",
+  "license": "BSD-3-Clause",
+  "license_file": "models/ur5e/LICENSE",
+  "mesh_dir": "models/ur5e/assets",
+  "base_transform": {
+    "pos_mm": [0.0, 0.0, 0.0],
+    "quat_wxyz": [0.0, 0.0, 0.0, -1.0]
+  },
+  "flange_transform": {
+    "pos_mm": [0.0, 100.0, 0.0],
+    "quat_wxyz": [-0.7071067811865476, 0.7071067811865476, 0.0, 0.0]
+  },
+  "tcp_offset_mm": [0.0, 0.0, 65.0],
+  "home_joints_deg": [-90.0, -90.0, 90.0, -90.0, -90.0, 0.0],
+  "base_visual": {
+    "body_name": "base",
+    "inertial": {
+      "mass_kg": 4.0,
+      "pos_mm": [0.0, 0.0, 0.0],
+      "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+      "diaginertia": [0.00443333156, 0.00443333156, 0.0072]
+    },
+    "meshes": [
+      { "file": "base_0.obj", "rgba": [0.033, 0.033, 0.033, 1.0] },
+      { "file": "base_1.obj", "rgba": [0.278, 0.278, 0.278, 1.0] }
+    ]
+  },
+  "joints": [
+    {
+      "id": 1,
+      "name": "shoulder_pan_joint",
+      "body_name": "shoulder_link",
+      "pos_mm": [0.0, 0.0, 163.0],
+      "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+      "axis": [0.0, 0.0, 1.0],
+      "limits_deg": [-360.0, 360.0],
+      "armature": 0.1,
+      "damping": 0.5,
+      "kp": 2000.0,
+      "kv": 400.0,
+      "force_limit_nm": 150.0,
+      "inertial": {
+        "mass_kg": 3.7,
+        "pos_mm": [0.0, 0.0, 0.0],
+        "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "diaginertia": [0.0102675, 0.0102675, 0.00666]
+      },
+      "meshes": [
+        { "file": "shoulder_0.obj", "rgba": [0.49, 0.678, 0.8, 1.0] },
+        { "file": "shoulder_1.obj", "rgba": [0.033, 0.033, 0.033, 1.0] },
+        { "file": "shoulder_2.obj", "rgba": [0.278, 0.278, 0.278, 1.0] }
+      ],
+      "collisions": [
+        {
+          "shape": "capsule",
+          "radius_mm": 60.0,
+          "half_length_mm": 60.0,
+          "pos_mm": [0.0, 0.0, -40.0],
+          "quat_wxyz": [1.0, 0.0, 0.0, 0.0]
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "shoulder_lift_joint",
+      "body_name": "upper_arm_link",
+      "pos_mm": [0.0, 138.0, 0.0],
+      "quat_wxyz": [0.7071067811865476, 0.0, 0.7071067811865476, 0.0],
+      "axis": [0.0, 1.0, 0.0],
+      "limits_deg": [-360.0, 360.0],
+      "armature": 0.1,
+      "damping": 0.5,
+      "kp": 2000.0,
+      "kv": 400.0,
+      "force_limit_nm": 150.0,
+      "inertial": {
+        "mass_kg": 8.393,
+        "pos_mm": [0.0, 0.0, 212.5],
+        "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "diaginertia": [0.133886, 0.133886, 0.0151074]
+      },
+      "meshes": [
+        { "file": "upperarm_0.obj", "rgba": [0.82, 0.82, 0.82, 1.0] },
+        { "file": "upperarm_1.obj", "rgba": [0.033, 0.033, 0.033, 1.0] },
+        { "file": "upperarm_2.obj", "rgba": [0.278, 0.278, 0.278, 1.0] },
+        { "file": "upperarm_3.obj", "rgba": [0.49, 0.678, 0.8, 1.0] }
+      ],
+      "collisions": [
+        {
+          "shape": "capsule",
+          "radius_mm": 60.0,
+          "half_length_mm": 60.0,
+          "pos_mm": [0.0, -40.0, 0.0],
+          "quat_wxyz": [0.7071067811865476, 0.7071067811865476, 0.0, 0.0]
+        },
+        {
+          "shape": "capsule",
+          "radius_mm": 50.0,
+          "half_length_mm": 200.0,
+          "pos_mm": [0.0, 0.0, 200.0],
+          "quat_wxyz": [1.0, 0.0, 0.0, 0.0]
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "elbow_joint",
+      "body_name": "forearm_link",
+      "pos_mm": [0.0, -131.0, 425.0],
+      "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+      "axis": [0.0, 1.0, 0.0],
+      "limits_deg": [-180.0, 180.0],
+      "armature": 0.1,
+      "damping": 0.5,
+      "kp": 2000.0,
+      "kv": 400.0,
+      "force_limit_nm": 150.0,
+      "inertial": {
+        "mass_kg": 2.275,
+        "pos_mm": [0.0, 0.0, 196.0],
+        "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "diaginertia": [0.0311796, 0.0311796, 0.004095]
+      },
+      "meshes": [
+        { "file": "forearm_0.obj", "rgba": [0.49, 0.678, 0.8, 1.0] },
+        { "file": "forearm_1.obj", "rgba": [0.82, 0.82, 0.82, 1.0] },
+        { "file": "forearm_2.obj", "rgba": [0.033, 0.033, 0.033, 1.0] },
+        { "file": "forearm_3.obj", "rgba": [0.278, 0.278, 0.278, 1.0] }
+      ],
+      "collisions": [
+        {
+          "shape": "capsule",
+          "radius_mm": 55.0,
+          "half_length_mm": 60.0,
+          "pos_mm": [0.0, 80.0, 0.0],
+          "quat_wxyz": [0.7071067811865476, 0.7071067811865476, 0.0, 0.0]
+        },
+        {
+          "shape": "capsule",
+          "radius_mm": 38.0,
+          "half_length_mm": 190.0,
+          "pos_mm": [0.0, 0.0, 200.0],
+          "quat_wxyz": [1.0, 0.0, 0.0, 0.0]
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "wrist_1_joint",
+      "body_name": "wrist_1_link",
+      "pos_mm": [0.0, 0.0, 392.0],
+      "quat_wxyz": [0.7071067811865476, 0.0, 0.7071067811865476, 0.0],
+      "axis": [0.0, 1.0, 0.0],
+      "limits_deg": [-360.0, 360.0],
+      "armature": 0.1,
+      "damping": 0.2,
+      "kp": 500.0,
+      "kv": 100.0,
+      "force_limit_nm": 28.0,
+      "inertial": {
+        "mass_kg": 1.219,
+        "pos_mm": [0.0, 127.0, 0.0],
+        "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "diaginertia": [0.0025599, 0.0025599, 0.0021942]
+      },
+      "meshes": [
+        { "file": "wrist1_0.obj", "rgba": [0.033, 0.033, 0.033, 1.0] },
+        { "file": "wrist1_1.obj", "rgba": [0.49, 0.678, 0.8, 1.0] },
+        { "file": "wrist1_2.obj", "rgba": [0.278, 0.278, 0.278, 1.0] }
+      ],
+      "collisions": [
+        {
+          "shape": "capsule",
+          "radius_mm": 40.0,
+          "half_length_mm": 70.0,
+          "pos_mm": [0.0, 50.0, 0.0],
+          "quat_wxyz": [0.7071067811865476, 0.7071067811865476, 0.0, 0.0]
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "wrist_2_joint",
+      "body_name": "wrist_2_link",
+      "pos_mm": [0.0, 127.0, 0.0],
+      "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+      "axis": [0.0, 0.0, 1.0],
+      "limits_deg": [-360.0, 360.0],
+      "armature": 0.1,
+      "damping": 0.2,
+      "kp": 500.0,
+      "kv": 100.0,
+      "force_limit_nm": 28.0,
+      "inertial": {
+        "mass_kg": 1.219,
+        "pos_mm": [0.0, 0.0, 100.0],
+        "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+        "diaginertia": [0.0025599, 0.0025599, 0.0021942]
+      },
+      "meshes": [
+        { "file": "wrist2_0.obj", "rgba": [0.033, 0.033, 0.033, 1.0] },
+        { "file": "wrist2_1.obj", "rgba": [0.49, 0.678, 0.8, 1.0] },
+        { "file": "wrist2_2.obj", "rgba": [0.278, 0.278, 0.278, 1.0] }
+      ],
+      "collisions": [
+        {
+          "shape": "capsule",
+          "radius_mm": 40.0,
+          "half_length_mm": 60.0,
+          "pos_mm": [0.0, 0.0, 40.0],
+          "quat_wxyz": [1.0, 0.0, 0.0, 0.0]
+        },
+        {
+          "shape": "capsule",
+          "radius_mm": 40.0,
+          "half_length_mm": 40.0,
+          "pos_mm": [0.0, 20.0, 100.0],
+          "quat_wxyz": [0.7071067811865476, 0.7071067811865476, 0.0, 0.0]
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "wrist_3_joint",
+      "body_name": "wrist_3_link",
+      "pos_mm": [0.0, 0.0, 100.0],
+      "quat_wxyz": [1.0, 0.0, 0.0, 0.0],
+      "axis": [0.0, 1.0, 0.0],
+      "limits_deg": [-360.0, 360.0],
+      "armature": 0.1,
+      "damping": 0.2,
+      "kp": 500.0,
+      "kv": 100.0,
+      "force_limit_nm": 28.0,
+      "inertial": {
+        "mass_kg": 0.1889,
+        "pos_mm": [0.0, 77.1683, 0.0],
+        "quat_wxyz": [0.7071067811865476, 0.0, 0.0, 0.7071067811865476],
+        "diaginertia": [0.000132134, 0.0000990863, 0.0000990863]
+      },
+      "meshes": [
+        { "file": "wrist3.obj", "rgba": [0.82, 0.82, 0.82, 1.0] }
+      ],
+      "collisions": [
+        {
+          "shape": "cylinder",
+          "radius_mm": 40.0,
+          "half_length_mm": 20.0,
+          "pos_mm": [0.0, 80.0, 0.0],
+          "quat_wxyz": [0.7071067811865476, 0.7071067811865476, 0.0, 0.0]
+        }
+      ]
+    }
+  ],
+  "environment": {
+    "worktable": {
+      "pos_mm": [-150.0, 480.0, 160.0],
+      "half_size_mm": [280.0, 280.0, 15.0]
+    },
+    "target_marker_pos_mm": [-134.0, 492.0, 423.0]
+  }
+}

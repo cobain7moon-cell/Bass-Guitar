@@ -1,0 +1,11 @@
+[package]
+name = "bass-motion"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+bass-types = { path = "../bass-types" }
+nalgebra.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
