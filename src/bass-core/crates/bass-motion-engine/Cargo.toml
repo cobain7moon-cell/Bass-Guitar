@@ -1,5 +1,5 @@
 [package]
-name = "bass-motion-kernel"
+name = "bass-motion-engine"
 edition.workspace = true
 version.workspace = true
 license.workspace = true

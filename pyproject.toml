@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bass-system"
-version = "1.0.0"
-description = "Bass 1.0 极简通用工业机器人软控制器、Web 示教器与 MuJoCo 4.0 物理仿真一体化系统"
+version = "1.1.0"
+description = "Bass 1.1 极简通用工业机器人软控制器、单页 3D Web 示教器与内置 MuJoCo 4.0.1 FFI 物理仿真一体化系统"
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
-    "mujoco>=4.0.0",
+    "mujoco>=4.0.1",
     "numpy>=1.24",
     "scipy>=1.11",
 ]

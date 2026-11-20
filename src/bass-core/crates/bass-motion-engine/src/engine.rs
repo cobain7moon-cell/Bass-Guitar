@@ -1,8 +1,8 @@
 use crate::api::{
-    MotionEvent, MotionKernelClient, MotionKernelCommand, MotionTelemetry, MOTION_CYCLE_DT_S,
+    MotionEngineClient, MotionEngineCommand, MotionEvent, MotionTelemetry, MOTION_CYCLE_DT_S,
     MOTION_CYCLE_MS, MOTION_CYCLE_NS,
 };
-use bass_hal::{FieldbusTransport, UdpFieldbusDriver};
+use bass_hal::{FieldbusTransport, MujocoFfiDriver, UdpFieldbusDriver};
 use bass_logger::{LogCategory, LogManager};
 use bass_motion::kinematics::KinematicsEngine;
 use bass_motion::planner::{LinearTrapezoidPlanner, MotionPlanner};
@@ -16,8 +16,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, watch};
 
-/// 独立运动内核：负责 2ms 确定性实时周期、轨迹规划与插补、底层硬件安全联锁以及 UDP 现场总线闭环
-pub struct MotionKernel<T: FieldbusTransport> {
+/// 独立实时运动引擎：负责 2ms 确定性实时周期、轨迹规划与插补、底层硬件安全联锁以及现场总线/FFI闭环
+pub struct MotionEngine<T: FieldbusTransport> {
     pub planner: Box<dyn MotionPlanner>,
     pub kinematics: Serial6DofKinematics,
     pub transport: T,
@@ -56,17 +56,17 @@ pub struct MotionKernel<T: FieldbusTransport> {
     active_motion_id: Option<u64>,
     active_is_jog: bool,
 
-    cmd_rx: Option<mpsc::UnboundedReceiver<MotionKernelCommand>>,
+    cmd_rx: Option<mpsc::UnboundedReceiver<MotionEngineCommand>>,
     telemetry_tx: watch::Sender<MotionTelemetry>,
     event_tx: broadcast::Sender<MotionEvent>,
 }
 
-impl<T: FieldbusTransport> MotionKernel<T> {
+impl<T: FieldbusTransport> MotionEngine<T> {
     pub fn new(
         kinematics: Serial6DofKinematics,
         transport: T,
         logger: LogManager,
-    ) -> (Self, MotionKernelClient) {
+    ) -> (Self, MotionEngineClient) {
         let initial_q = kinematics.home_joints();
         let initial_cart = kinematics.forward_kinematics(&initial_q);
         let planner = Box::new(LinearTrapezoidPlanner::new(kinematics.clone()));
@@ -97,9 +97,9 @@ impl<T: FieldbusTransport> MotionKernel<T> {
         let (telemetry_tx, telemetry_rx) = watch::channel(initial_telemetry);
         let (event_tx, _) = broadcast::channel(256);
 
-        let client = MotionKernelClient::new(cmd_tx, telemetry_rx, event_tx.clone());
+        let client = MotionEngineClient::new(cmd_tx, telemetry_rx, event_tx.clone());
 
-        let kernel = Self {
+        let engine = Self {
             planner,
             kinematics,
             transport,
@@ -138,11 +138,11 @@ impl<T: FieldbusTransport> MotionKernel<T> {
 
         logger.info(
             LogCategory::Motion,
-            "motion-kernel",
-            "独立运动内核已初始化 (2ms 实时闭环 API)",
+            "motion-engine",
+            "独立实时运动引擎已初始化 (2ms 实时闭环 API)",
         );
 
-        (kernel, client)
+        (engine, client)
     }
 
     #[inline]
@@ -181,6 +181,19 @@ impl<T: FieldbusTransport> MotionKernel<T> {
         id
     }
 
+    fn notify_if_non_jog_motion_active(&mut self, reason: &str) {
+        if let Some(old_mid) = self.active_motion_id.take() {
+            let was_jog = self.active_is_jog;
+            self.active_is_jog = false;
+            if !was_jog {
+                let _ = self.event_tx.send(MotionEvent::MotionFailed {
+                    motion_id: old_mid,
+                    error: reason.to_string(),
+                });
+            }
+        }
+    }
+
     fn stop_active_motion_internal(&mut self) {
         self.planner.stop();
         self.hold_jog_active = false;
@@ -213,7 +226,7 @@ impl<T: FieldbusTransport> MotionKernel<T> {
                     "物理端存在未清除故障 (0x{:08X})，已发送 CTRL_FAULT_RESET 复位脉冲，请确认清除后再上电",
                     self.last_fault_code
                 );
-                self.logger.warn(LogCategory::Safety, "motion-kernel", &msg);
+                self.logger.warn(LogCategory::Safety, "motion-engine", &msg);
                 return Err(msg);
             }
             if self.estop_active {
@@ -224,7 +237,7 @@ impl<T: FieldbusTransport> MotionKernel<T> {
             }
             self.drives_enabled = true;
             self.logger
-                .info(LogCategory::Safety, "motion-kernel", "伺服驱动已使能 (DRIVES ON)");
+                .info(LogCategory::Safety, "motion-engine", "伺服驱动已使能 (DRIVES ON)");
         } else if self.drives_enabled {
             self.drives_enabled = false;
             self.stop_active_motion_internal();
@@ -232,7 +245,7 @@ impl<T: FieldbusTransport> MotionKernel<T> {
                 self.q_cmd = self.q_act;
             }
             self.logger
-                .info(LogCategory::Safety, "motion-kernel", "伺服已下电");
+                .info(LogCategory::Safety, "motion-engine", "伺服已下电");
         } else {
             self.drives_enabled = false;
         }
@@ -247,7 +260,7 @@ impl<T: FieldbusTransport> MotionKernel<T> {
             self.fault_reset_pulses = self.fault_reset_pulses.max(5);
             self.logger.info(
                 LogCategory::Safety,
-                "motion-kernel",
+                "motion-engine",
                 "急停已复位，已发送故障复位脉冲 (CTRL_FAULT_RESET)",
             );
         }
@@ -264,6 +277,7 @@ impl<T: FieldbusTransport> MotionKernel<T> {
         self.planner
             .plan_movel(&self.q_cmd, &target, vel_mm_s)
             .map_err(|e| format!("轨迹规划错误: {}", e))?;
+        self.notify_if_non_jog_motion_active("运动指令已被新 MoveL 轨迹抢占");
         let mid = self.alloc_motion_id();
         self.active_motion_id = Some(mid);
         self.active_is_jog = false;
@@ -280,6 +294,7 @@ impl<T: FieldbusTransport> MotionKernel<T> {
         self.planner
             .plan_movej(&self.q_cmd, target, vel_deg_s)
             .map_err(|e| format!("轨迹规划错误: {}", e))?;
+        self.notify_if_non_jog_motion_active("运动指令已被新 MoveJ 轨迹抢占");
         let mid = self.alloc_motion_id();
         self.active_motion_id = Some(mid);
         self.active_is_jog = false;
@@ -412,7 +427,7 @@ impl<T: FieldbusTransport> MotionKernel<T> {
             self.trigger_safety_trip("仿真物理端通信超时，驱动已安全断开".to_string(), 0);
         }
 
-        // 2. 消费控制器管理系统发来的异步 MotionKernelCommand
+        // 2. 消费控制器管理系统发来的异步 MotionEngineCommand
         const MAX_CMDS_PER_CYCLE: usize = 32;
         if let Some(mut rx) = self.cmd_rx.take() {
             let mut processed = 0;
@@ -421,19 +436,19 @@ impl<T: FieldbusTransport> MotionKernel<T> {
                     Ok(cmd) => {
                         processed += 1;
                         match cmd {
-                            MotionKernelCommand::SetDrivesPower { enable, resp } => {
+                            MotionEngineCommand::SetDrivesPower { enable, resp } => {
                                 let res = self.handle_set_drives_power(enable);
                                 let _ = resp.send(res);
                             }
-                            MotionKernelCommand::SetEmergencyStop { active, resp } => {
+                            MotionEngineCommand::SetEmergencyStop { active, resp } => {
                                 let res = self.handle_set_estop(active);
                                 let _ = resp.send(res);
                             }
-                            MotionKernelCommand::SetSpeedOverride { value, resp } => {
+                            MotionEngineCommand::SetSpeedOverride { value, resp } => {
                                 self.speed_override = value.clamp(5, 100);
                                 let _ = resp.send(self.speed_override);
                             }
-                            MotionKernelCommand::SetDigitalOut { pin, value, resp } => {
+                            MotionEngineCommand::SetDigitalOut { pin, value, resp } => {
                                 if (1..=8).contains(&pin) {
                                     self.digital_out[pin - 1] = value;
                                     let _ = resp.send(Ok(self.digital_out));
@@ -441,11 +456,11 @@ impl<T: FieldbusTransport> MotionKernel<T> {
                                     let _ = resp.send(Err("DOUT 引脚号必须在 1..=8 范围内".to_string()));
                                 }
                             }
-                            MotionKernelCommand::ClearFault { resp } => {
+                            MotionEngineCommand::ClearFault { resp } => {
                                 self.fault_reset_pulses = self.fault_reset_pulses.max(5);
                                 let _ = resp.send(());
                             }
-                            MotionKernelCommand::MoveL {
+                            MotionEngineCommand::MoveL {
                                 target,
                                 vel_mm_s,
                                 resp,
@@ -453,7 +468,7 @@ impl<T: FieldbusTransport> MotionKernel<T> {
                                 let res = self.handle_move_l(target, vel_mm_s);
                                 let _ = resp.send(res);
                             }
-                            MotionKernelCommand::MoveJ {
+                            MotionEngineCommand::MoveJ {
                                 target,
                                 vel_deg_s,
                                 resp,
@@ -461,25 +476,26 @@ impl<T: FieldbusTransport> MotionKernel<T> {
                                 let res = self.handle_move_j(target, vel_deg_s);
                                 let _ = resp.send(res);
                             }
-                            MotionKernelCommand::JogStep { cmd, resp } => {
+                            MotionEngineCommand::JogStep { cmd, resp } => {
                                 let res = self.handle_jog_step(cmd);
                                 let _ = resp.send(res);
                             }
-                            MotionKernelCommand::JogHold { cmd, resp } => {
+                            MotionEngineCommand::JogHold { cmd, resp } => {
                                 let res = self.handle_jog_hold(cmd, now);
                                 let _ = resp.send(res);
                             }
-                            MotionKernelCommand::JogStop { resp } => {
+                            MotionEngineCommand::JogStop { resp } => {
                                 if self.hold_jog_active || self.active_is_jog {
                                     self.stop_active_motion_internal();
                                 }
                                 let _ = resp.send(());
                             }
-                            MotionKernelCommand::SetMotionPaused { paused, resp } => {
+                            MotionEngineCommand::SetMotionPaused { paused, resp } => {
                                 self.paused = paused;
                                 let _ = resp.send(());
                             }
-                            MotionKernelCommand::StopMotion { resp } => {
+                            MotionEngineCommand::StopMotion { resp } => {
+                                self.notify_if_non_jog_motion_active("运动已被停止");
                                 self.stop_active_motion_internal();
                                 let _ = resp.send(());
                             }
@@ -546,7 +562,7 @@ impl<T: FieldbusTransport> MotionKernel<T> {
                         let msg = format!("运动规划错误: {}", e);
                         let failed_id = self.active_motion_id.take();
                         self.stop_active_motion_internal();
-                        self.logger.error(LogCategory::Motion, "motion-kernel", &msg);
+                        self.logger.error(LogCategory::Motion, "motion-engine", &msg);
                         if let Some(mid) = failed_id {
                             let _ = self.event_tx.send(MotionEvent::MotionFailed {
                                 motion_id: mid,
@@ -598,16 +614,34 @@ impl<T: FieldbusTransport> MotionKernel<T> {
     }
 }
 
-/// 打开基于定长二进制 UDP 现场总线的运动内核实例并返回控制句柄
-pub fn open_udp_motion_kernel(
+/// 打开基于定长二进制 UDP 现场总线的实时运动引擎实例并返回控制句柄
+pub fn open_udp_motion_engine(
     kinematics: Serial6DofKinematics,
     udp_bind: &str,
     udp_remote: &str,
     logger: LogManager,
-) -> Result<(MotionKernel<UdpFieldbusDriver>, MotionKernelClient), String> {
+) -> Result<(MotionEngine<UdpFieldbusDriver>, MotionEngineClient), String> {
     let transport = UdpFieldbusDriver::open(udp_bind, udp_remote)
         .map_err(|e| format!("打开 UDP 驱动失败: {}", e))?;
-    Ok(MotionKernel::new(kinematics, transport, logger))
+    Ok(MotionEngine::new(kinematics, transport, logger))
+}
+
+/// 打开内置 MuJoCo 4.0.1 C FFI 物理闭环的实时运动引擎实例并返回控制句柄
+pub fn open_mujoco_motion_engine(
+    kinematics: Serial6DofKinematics,
+    robot_model_path: impl AsRef<std::path::Path>,
+    mujoco_lib_path: Option<&std::path::Path>,
+    logger: LogManager,
+) -> Result<(MotionEngine<MujocoFfiDriver>, MotionEngineClient, String), String> {
+    let transport = MujocoFfiDriver::open(robot_model_path, mujoco_lib_path)
+        .map_err(|e| format!("初始化内置 MuJoCo FFI 物理引擎失败: {}", e))?;
+    let info = format!(
+        "MuJoCo {} ({})",
+        transport.version_string(),
+        transport.library_path().display()
+    );
+    let (engine, client) = MotionEngine::new(kinematics, transport, logger);
+    Ok((engine, client, info))
 }
 
 #[cfg(target_os = "windows")]
@@ -695,15 +729,15 @@ fn maybe_warn_overrun(
     }
 }
 
-/// 在专用 OS 线程中启动 2ms 确定性实时运动内核闭环（高精度定时器混合睡眠 + 自旋 + 超时日志告警）
+/// 在专用 OS 线程中启动 2ms 确定性实时运动引擎闭环（高精度定时器混合睡眠 + 自旋 + 超时日志告警）
 pub fn spawn_realtime_loop<T: FieldbusTransport + 'static>(
-    mut kernel: MotionKernel<T>,
+    mut engine: MotionEngine<T>,
     logger: LogManager,
 ) -> Result<JoinHandle<()>, String> {
     std::thread::Builder::new()
         .name("bass-motion-2ms".to_string())
         .spawn(move || {
-            tracing::info!("⚡ 独立运动内核 2ms 确定性控制循环已启动 (500Hz)");
+            tracing::info!("⚡ 独立实时运动引擎 2ms 确定性控制循环已启动 (500Hz)");
             let target_dt = Duration::from_millis(MOTION_CYCLE_MS);
             let spin_guard = Duration::from_micros(1000);
             let overrun_threshold = Duration::from_millis(MOTION_CYCLE_MS * 2);
@@ -714,7 +748,7 @@ pub fn spawn_realtime_loop<T: FieldbusTransport + 'static>(
 
             loop {
                 let now = Instant::now();
-                kernel.step_once(now);
+                engine.step_once(now);
 
                 let work_elapsed = now.elapsed();
                 if work_elapsed > overrun_threshold {
@@ -764,13 +798,13 @@ pub fn spawn_realtime_loop<T: FieldbusTransport + 'static>(
                 }
             }
         })
-        .map_err(|e| format!("启动运动内核线程失败: {}", e))
+        .map_err(|e| format!("启动实时运动引擎线程失败: {}", e))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::MotionKernelApi;
+    use crate::api::MotionEngineApi;
     use bass_hal::MockFieldbusTransport;
     use bass_types::{CoordSystem, TxPdo, STAT_DRIVES_ENABLED, STAT_PLANT_READY};
     use std::path::Path;
@@ -781,8 +815,13 @@ mod tests {
         Serial6DofKinematics::from_json_file(path).expect("加载 robot_model.json 失败")
     }
 
-    fn push_tx(kernel: &mut MotionKernel<MockFieldbusTransport>, sim_tick: u64, echo_seq: u64, q: [f64; 6]) {
-        kernel.transport.push_tx_pdo(TxPdo {
+    fn push_tx(
+        engine: &mut MotionEngine<MockFieldbusTransport>,
+        sim_tick: u64,
+        echo_seq: u64,
+        q: [f64; 6],
+    ) {
+        engine.transport.push_tx_pdo(TxPdo {
             status_word: STAT_PLANT_READY | STAT_DRIVES_ENABLED,
             echo_seq,
             sim_tick,
@@ -799,12 +838,12 @@ mod tests {
         let kin = test_kinematics();
         let home = kin.home_joints().values;
         let mock = MockFieldbusTransport::new();
-        let (mut kernel, client) = MotionKernel::new(kin, mock, LogManager::in_memory(100));
+        let (mut engine, client) = MotionEngine::new(kin, mock, LogManager::in_memory(100));
         let mut events = client.subscribe_events();
 
         let t0 = Instant::now();
-        push_tx(&mut kernel, 1, 0, home);
-        kernel.step_once(t0);
+        push_tx(&mut engine, 1, 0, home);
+        engine.step_once(t0);
 
         let fut = client.set_drives_power(true);
         tokio::pin!(fut);
@@ -812,7 +851,7 @@ mod tests {
             tokio::select! {
                 res = &mut fut => break res.unwrap(),
                 _ = tokio::task::yield_now() => {
-                    kernel.step_once(t0 + Duration::from_millis(MOTION_CYCLE_MS));
+                    engine.step_once(t0 + Duration::from_millis(MOTION_CYCLE_MS));
                 }
             }
         };
@@ -826,7 +865,7 @@ mod tests {
             tokio::select! {
                 res = &mut move_fut => break res.unwrap(),
                 _ = tokio::task::yield_now() => {
-                    kernel.step_once(t0 + Duration::from_millis(MOTION_CYCLE_MS * 2));
+                    engine.step_once(t0 + Duration::from_millis(MOTION_CYCLE_MS * 2));
                 }
             }
         };
@@ -835,10 +874,10 @@ mod tests {
         let mut now = t0 + Duration::from_millis(MOTION_CYCLE_MS * 3);
         for i in 0..10u64 {
             now += Duration::from_millis(MOTION_CYCLE_MS);
-            let seq = kernel.seq;
-            let q = kernel.q_cmd.values;
-            push_tx(&mut kernel, i + 2, seq, q);
-            kernel.step_once(now);
+            let seq = engine.seq;
+            let q = engine.q_cmd.values;
+            push_tx(&mut engine, i + 2, seq, q);
+            engine.step_once(now);
         }
 
         let pause_fut = client.set_motion_paused(true);
@@ -848,21 +887,21 @@ mod tests {
                 res = &mut pause_fut => { res.unwrap(); break; }
                 _ = tokio::task::yield_now() => {
                     now += Duration::from_millis(MOTION_CYCLE_MS);
-                    let seq = kernel.seq;
-                    let q = kernel.q_cmd.values;
-                    push_tx(&mut kernel, 15, seq, q);
-                    kernel.step_once(now);
+                    let seq = engine.seq;
+                    let q = engine.q_cmd.values;
+                    push_tx(&mut engine, 15, seq, q);
+                    engine.step_once(now);
                 }
             }
         }
-        let frozen_q = kernel.q_cmd.values[0];
+        let frozen_q = engine.q_cmd.values[0];
         for i in 0..10u64 {
             now += Duration::from_millis(MOTION_CYCLE_MS);
-            let seq = kernel.seq;
-            let q = kernel.q_cmd.values;
-            push_tx(&mut kernel, 20 + i, seq, q);
-            kernel.step_once(now);
-            assert!((kernel.q_cmd.values[0] - frozen_q).abs() < 1e-9);
+            let seq = engine.seq;
+            let q = engine.q_cmd.values;
+            push_tx(&mut engine, 20 + i, seq, q);
+            engine.step_once(now);
+            assert!((engine.q_cmd.values[0] - frozen_q).abs() < 1e-9);
         }
 
         // 恢复运行直到发出 MotionCompleted 事件
@@ -873,10 +912,10 @@ mod tests {
                 res = &mut resume_fut => { res.unwrap(); break; }
                 _ = tokio::task::yield_now() => {
                     now += Duration::from_millis(MOTION_CYCLE_MS);
-                    let seq = kernel.seq;
-                    let q = kernel.q_cmd.values;
-                    push_tx(&mut kernel, 35, seq, q);
-                    kernel.step_once(now);
+                    let seq = engine.seq;
+                    let q = engine.q_cmd.values;
+                    push_tx(&mut engine, 35, seq, q);
+                    engine.step_once(now);
                 }
             }
         }
@@ -884,10 +923,10 @@ mod tests {
         let mut completed = false;
         for step in 0..300u64 {
             now += Duration::from_millis(MOTION_CYCLE_MS);
-            let seq = kernel.seq;
-            let q = kernel.q_cmd.values;
-            push_tx(&mut kernel, 40 + step, seq, q);
-            kernel.step_once(now);
+            let seq = engine.seq;
+            let q = engine.q_cmd.values;
+            push_tx(&mut engine, 40 + step, seq, q);
+            engine.step_once(now);
             while let Ok(ev) = events.try_recv() {
                 if ev == (MotionEvent::MotionCompleted { motion_id }) {
                     completed = true;
@@ -898,21 +937,58 @@ mod tests {
             }
         }
         assert!(completed, "未收到 MotionCompleted 事件");
-        assert!((kernel.q_cmd.values[0] - target[0]).abs() < 1e-3);
+        assert!((engine.q_cmd.values[0] - target[0]).abs() < 1e-3);
+    }
+
+    #[test]
+    fn test_move_preemption_emits_motion_failed_for_replaced_motion() {
+        let kin = test_kinematics();
+        let home = kin.home_joints().values;
+        let mock = MockFieldbusTransport::new();
+        let (mut engine, client) = MotionEngine::new(kin, mock, LogManager::in_memory(100));
+        let mut events = client.subscribe_events();
+        let t0 = Instant::now();
+
+        push_tx(&mut engine, 1, 0, home);
+        engine.step_once(t0);
+        engine.drives_enabled = true;
+
+        let mut target1 = home;
+        target1[0] += 15.0;
+        let m1 = engine
+            .handle_move_j(MotionTarget::Joints(Joints6D { values: target1 }), 30.0)
+            .unwrap();
+
+        let mut target2 = home;
+        target2[0] -= 10.0;
+        let m2 = engine
+            .handle_move_j(MotionTarget::Joints(Joints6D { values: target2 }), 30.0)
+            .unwrap();
+        assert_ne!(m1, m2);
+
+        let mut saw_failed = false;
+        while let Ok(ev) = events.try_recv() {
+            if let MotionEvent::MotionFailed { motion_id, .. } = ev {
+                if motion_id == m1 {
+                    saw_failed = true;
+                }
+            }
+        }
+        assert!(saw_failed, "新轨迹抢占旧轨迹时应发出 MotionFailed 事件");
     }
 
     #[test]
     fn test_offline_and_stat_fault_safety_trip_and_watchdog() {
         let kin = test_kinematics();
         let mock = MockFieldbusTransport::new();
-        let (mut kernel, client) = MotionKernel::new(kin, mock, LogManager::in_memory(100));
+        let (mut engine, client) = MotionEngine::new(kin, mock, LogManager::in_memory(100));
         let mut events = client.subscribe_events();
         let t0 = Instant::now();
 
-        push_tx(&mut kernel, 1, 0, [-85.0, -90.0, 90.0, -90.0, -90.0, 0.0]);
-        kernel.step_once(t0);
-        kernel.drives_enabled = true;
-        kernel
+        push_tx(&mut engine, 1, 0, [-85.0, -90.0, 90.0, -90.0, -90.0, 0.0]);
+        engine.step_once(t0);
+        engine.drives_enabled = true;
+        engine
             .handle_move_j(
                 MotionTarget::Joints(Joints6D {
                     values: [-70.0, -90.0, 90.0, -90.0, -90.0, 0.0],
@@ -922,10 +998,10 @@ mod tests {
             .unwrap();
 
         // 超过 150ms 无 TxPdo -> 断线跳闸
-        kernel.step_once(t0 + Duration::from_millis(200));
-        assert!(!kernel.plant_online);
-        assert!(!kernel.drives_enabled);
-        assert!(!kernel.planner.is_busy());
+        engine.step_once(t0 + Duration::from_millis(200));
+        assert!(!engine.plant_online);
+        assert!(!engine.drives_enabled);
+        assert!(!engine.planner.is_busy());
 
         let mut saw_trip = false;
         while let Ok(ev) = events.try_recv() {
@@ -938,29 +1014,29 @@ mod tests {
 
         // 重连并测试 Hold-to-Jog 150ms 看门狗 + STAT_FAULT
         let t1 = t0 + Duration::from_millis(250);
-        let cur_q = kernel.q_act.values;
-        push_tx(&mut kernel, 2, 0, cur_q);
-        kernel.step_once(t1);
-        kernel.drives_enabled = true;
+        let cur_q = engine.q_act.values;
+        push_tx(&mut engine, 2, 0, cur_q);
+        engine.step_once(t1);
+        engine.drives_enabled = true;
         let jog = JogCommand {
             coord_system: CoordSystem::Joint,
             axis: "J1".to_string(),
             direction: 1.0,
             step_size: 2.0,
         };
-        kernel.handle_jog_hold(jog, t1).unwrap();
-        assert!(kernel.hold_jog_active);
+        engine.handle_jog_hold(jog, t1).unwrap();
+        assert!(engine.hold_jog_active);
 
-        let cur_cmd = kernel.q_cmd.values;
-        push_tx(&mut kernel, 3, 0, cur_cmd);
-        kernel.step_once(t1 + Duration::from_millis(200));
-        assert!(!kernel.hold_jog_active);
-        assert!(!kernel.planner.is_busy());
+        let cur_cmd = engine.q_cmd.values;
+        push_tx(&mut engine, 3, 0, cur_cmd);
+        engine.step_once(t1 + Duration::from_millis(200));
+        assert!(!engine.hold_jog_active);
+        assert!(!engine.planner.is_busy());
 
         // 注入 STAT_FAULT 触发保护与复位脉冲
-        let seq = kernel.seq;
-        let q = kernel.q_act.values;
-        kernel.transport.push_tx_pdo(TxPdo {
+        let seq = engine.seq;
+        let q = engine.q_act.values;
+        engine.transport.push_tx_pdo(TxPdo {
             status_word: STAT_PLANT_READY | STAT_FAULT,
             echo_seq: seq,
             sim_tick: 4,
@@ -970,13 +1046,13 @@ mod tests {
             digital_in: 0,
             fault_code: 0x1002,
         });
-        kernel.step_once(t1 + Duration::from_millis(210));
-        assert!(kernel.plant_fault_active);
-        assert!(!kernel.drives_enabled);
-        assert!(kernel.handle_set_drives_power(true).is_err());
-        assert!(kernel.fault_reset_pulses > 0);
-        kernel.step_once(t1 + Duration::from_millis(210 + MOTION_CYCLE_MS));
-        let last_rx = kernel.transport.last_sent_rx().unwrap();
+        engine.step_once(t1 + Duration::from_millis(210));
+        assert!(engine.plant_fault_active);
+        assert!(!engine.drives_enabled);
+        assert!(engine.handle_set_drives_power(true).is_err());
+        assert!(engine.fault_reset_pulses > 0);
+        engine.step_once(t1 + Duration::from_millis(210 + MOTION_CYCLE_MS));
+        let last_rx = engine.transport.last_sent_rx().unwrap();
         assert_ne!(last_rx.control_word & CTRL_FAULT_RESET, 0);
     }
 }

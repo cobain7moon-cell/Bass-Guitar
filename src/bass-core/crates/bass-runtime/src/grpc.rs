@@ -14,7 +14,7 @@ use bass_compiler::{
     CompileDiagnostic, CompileStage, DiagnosticSeverity, RobotCompiler,
 };
 use bass_logger::{LogCategory, LogEntry, LogLevel, LogManager, LogQuery};
-use bass_motion_kernel::{MotionEvent, MotionKernelApi, MotionTelemetry};
+use bass_motion_engine::{MotionEngineApi, MotionEvent, MotionTelemetry};
 use bass_proto::v1::controller_service_server::{ControllerService, ControllerServiceServer};
 use bass_proto::v1::log_service_server::{LogService, LogServiceServer};
 use bass_proto::v1::motion_service_server::{MotionService, MotionServiceServer};
@@ -38,9 +38,10 @@ use tower_http::services::ServeDir;
 #[derive(Clone)]
 pub struct AppState {
     pub task: TaskHandle,
-    pub motion_api: Arc<dyn MotionKernelApi>,
+    pub motion_api: Arc<dyn MotionEngineApi>,
     pub compiler: Arc<RobotCompiler>,
     pub logger: LogManager,
+    pub instance_dir: PathBuf,
     pub programs_dir: PathBuf,
     pub web_dir: PathBuf,
 }
@@ -48,9 +49,10 @@ pub struct AppState {
 impl AppState {
     pub fn new(
         task: TaskHandle,
-        motion_api: Arc<dyn MotionKernelApi>,
+        motion_api: Arc<dyn MotionEngineApi>,
         compiler: Arc<RobotCompiler>,
         logger: LogManager,
+        instance_dir: PathBuf,
         programs_dir: PathBuf,
         web_dir: PathBuf,
     ) -> Self {
@@ -59,6 +61,7 @@ impl AppState {
             motion_api,
             compiler,
             logger,
+            instance_dir,
             programs_dir,
             web_dir,
         }
@@ -564,13 +567,13 @@ async fn await_motion_completion(
                         }
                     }
                     Err(broadcast::error::RecvError::Closed) => {
-                        return Err("运动内核事件通道已关闭".to_string());
+                        return Err("实时运动引擎事件通道已关闭".to_string());
                     }
                 }
             }
             changed = telem_rx.changed() => {
                 if changed.is_err() {
-                    return Err("运动内核遥测通道已关闭".to_string());
+                    return Err("实时运动引擎遥测通道已关闭".to_string());
                 }
                 while let Ok(ev) = event_rx.try_recv() {
                     match ev {
@@ -917,6 +920,8 @@ pub fn build_app(state: AppState) -> Router {
             .append_index_html_on_directories(true)
             .fallback(axum::routing::get(fallback_handler)),
     );
+    let robot_config_service = get_service(ServeDir::new(state.instance_dir.join("config")));
+    let robot_models_service = get_service(ServeDir::new(state.instance_dir.join("models")));
 
     let cors = CorsLayer::new()
         .allow_origin(Any)
@@ -943,6 +948,8 @@ pub fn build_app(state: AppState) -> Router {
             grpc_web_service.clone(),
         )
         .route_service("/bass.controller.v1.MotionService/{*rest}", grpc_web_service)
+        .nest_service("/robot-assets/config", robot_config_service)
+        .nest_service("/robot-assets/models", robot_models_service)
         .fallback_service(static_service)
         .layer(cors)
         .with_state(state)
@@ -1292,7 +1299,7 @@ mod tests {
     use axum::http::{header, Request, StatusCode};
     use bass_hal::MockFieldbusTransport;
     use bass_motion::Serial6DofKinematics;
-    use bass_motion_kernel::{MotionKernel, MotionKernelApi};
+    use bass_motion_engine::{MotionEngine, MotionEngineApi};
     use bass_proto::v1::controller_service_client::ControllerServiceClient;
     use bass_proto::v1::log_service_client::LogServiceClient;
     use bass_proto::v1::motion_service_client::MotionServiceClient;
@@ -1323,7 +1330,7 @@ mod tests {
         let compiler = Arc::new(RobotCompiler::new(kin.clone()));
         let programs_dir = inst_dir.join("programs");
 
-        let (mut mk, mk_client) = MotionKernel::new(kin.clone(), mock, logger.clone());
+        let (mut mk, mk_client) = MotionEngine::new(kin.clone(), mock, logger.clone());
         // 预先注入物理端在线帧并启用伺服，便于端点联动验证
         let home = Joints6D::home().values;
         mk.transport.push_tx_pdo(TxPdo {
@@ -1338,7 +1345,7 @@ mod tests {
         });
         mk.step_once(Instant::now());
 
-        let motion_api: Arc<dyn MotionKernelApi> = Arc::new(mk_client);
+        let motion_api: Arc<dyn MotionEngineApi> = Arc::new(mk_client);
         let (tm, task_handle) = TaskManager::with_compiler(
             motion_api.clone(),
             &kin,
@@ -1351,7 +1358,7 @@ mod tests {
         std::thread::spawn(move || {
             let mut now = Instant::now();
             for tick in 2..10_000u64 {
-                now += Duration::from_millis(bass_motion_kernel::MOTION_CYCLE_MS);
+                now += Duration::from_millis(bass_motion_engine::MOTION_CYCLE_MS);
                 let seq = mk.seq;
                 let q = mk.q_cmd.values;
                 mk.transport.push_tx_pdo(TxPdo {
@@ -1376,6 +1383,7 @@ mod tests {
             motion_api,
             compiler,
             logger,
+            inst_dir,
             programs_dir,
             test_web_dir(),
         );
@@ -1788,5 +1796,26 @@ mod tests {
             .unwrap()
             .into_inner();
         assert!(clear_resp.ok);
+    }
+
+    #[tokio::test]
+    async fn test_robot_assets_static_serving() {
+        let app = setup_runtime_router();
+        let req = Request::builder()
+            .uri("/robot-assets/config/robot_model.json")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("\"robot_name\": \"UR5e\""));
+
+        let obj_req = Request::builder()
+            .uri("/robot-assets/models/ur5e/assets/base_0.obj")
+            .body(Body::empty())
+            .unwrap();
+        let obj_resp = app.oneshot(obj_req).await.unwrap();
+        assert_eq!(obj_resp.status(), StatusCode::OK);
     }
 }

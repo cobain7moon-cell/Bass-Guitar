@@ -10,7 +10,7 @@ pub const MOTION_CYCLE_DT_S: f64 = 0.002;
 /// 实时运动控制周期（纳秒）
 pub const MOTION_CYCLE_NS: u64 = 2_000_000;
 
-/// 运动内核向外发布的实时物理与伺服遥测快照
+/// 实时运动引擎向外发布的实时物理与伺服遥测快照
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MotionTelemetry {
     pub drives_enabled: bool,
@@ -34,7 +34,7 @@ pub struct MotionTelemetry {
     pub sim_tick: u64,
 }
 
-/// 运动内核向控制器与任务管理器推送的异步事件
+/// 实时运动引擎向控制器与任务管理器推送的异步事件
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MotionEvent {
     MotionCompleted {
@@ -56,8 +56,8 @@ pub enum MotionEvent {
     FaultCleared,
 }
 
-/// 发送给 2ms 实时运动内核线程的指令
-pub enum MotionKernelCommand {
+/// 发送给 2ms 实时运动引擎线程的指令
+pub enum MotionEngineCommand {
     SetDrivesPower {
         enable: bool,
         resp: oneshot::Sender<Result<bool, String>>,
@@ -108,9 +108,9 @@ pub enum MotionKernelCommand {
     },
 }
 
-/// 运动内核标准异步控制 API（面向控制器管理与任务调度模块）
+/// 实时运动引擎标准异步控制 API（面向控制器管理与任务调度模块）
 #[async_trait]
-pub trait MotionKernelApi: Send + Sync {
+pub trait MotionEngineApi: Send + Sync {
     fn latest_telemetry(&self) -> MotionTelemetry;
     fn subscribe_telemetry(&self) -> watch::Receiver<MotionTelemetry>;
     fn subscribe_events(&self) -> broadcast::Receiver<MotionEvent>;
@@ -131,17 +131,17 @@ pub trait MotionKernelApi: Send + Sync {
     async fn stop_motion(&self) -> Result<(), String>;
 }
 
-/// 同进程强类型运动内核异步调用句柄
+/// 同进程强类型实时运动引擎异步调用句柄
 #[derive(Clone)]
-pub struct MotionKernelClient {
-    cmd_tx: mpsc::UnboundedSender<MotionKernelCommand>,
+pub struct MotionEngineClient {
+    cmd_tx: mpsc::UnboundedSender<MotionEngineCommand>,
     telemetry_rx: watch::Receiver<MotionTelemetry>,
     event_tx: broadcast::Sender<MotionEvent>,
 }
 
-impl MotionKernelClient {
+impl MotionEngineClient {
     pub fn new(
-        cmd_tx: mpsc::UnboundedSender<MotionKernelCommand>,
+        cmd_tx: mpsc::UnboundedSender<MotionEngineCommand>,
         telemetry_rx: watch::Receiver<MotionTelemetry>,
         event_tx: broadcast::Sender<MotionEvent>,
     ) -> Self {
@@ -154,18 +154,18 @@ impl MotionKernelClient {
 
     async fn send_cmd<R>(
         &self,
-        build: impl FnOnce(oneshot::Sender<R>) -> MotionKernelCommand,
+        build: impl FnOnce(oneshot::Sender<R>) -> MotionEngineCommand,
     ) -> Result<R, String> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx
             .send(build(tx))
-            .map_err(|_| "运动内核通信通道已断开".to_string())?;
-        rx.await.map_err(|_| "运动内核响应超时".to_string())
+            .map_err(|_| "实时运动引擎通信通道已断开".to_string())?;
+        rx.await.map_err(|_| "实时运动引擎响应超时".to_string())
     }
 }
 
 #[async_trait]
-impl MotionKernelApi for MotionKernelClient {
+impl MotionEngineApi for MotionEngineClient {
     fn latest_telemetry(&self) -> MotionTelemetry {
         self.telemetry_rx.borrow().clone()
     }
@@ -179,32 +179,32 @@ impl MotionKernelApi for MotionKernelClient {
     }
 
     async fn set_drives_power(&self, enable: bool) -> Result<bool, String> {
-        self.send_cmd(|resp| MotionKernelCommand::SetDrivesPower { enable, resp })
+        self.send_cmd(|resp| MotionEngineCommand::SetDrivesPower { enable, resp })
             .await?
     }
 
     async fn set_emergency_stop(&self, active: bool) -> Result<bool, String> {
-        self.send_cmd(|resp| MotionKernelCommand::SetEmergencyStop { active, resp })
+        self.send_cmd(|resp| MotionEngineCommand::SetEmergencyStop { active, resp })
             .await?
     }
 
     async fn set_speed_override(&self, value: u8) -> Result<u8, String> {
-        self.send_cmd(|resp| MotionKernelCommand::SetSpeedOverride { value, resp })
+        self.send_cmd(|resp| MotionEngineCommand::SetSpeedOverride { value, resp })
             .await
     }
 
     async fn set_digital_out(&self, pin: usize, value: bool) -> Result<[bool; 8], String> {
-        self.send_cmd(|resp| MotionKernelCommand::SetDigitalOut { pin, value, resp })
+        self.send_cmd(|resp| MotionEngineCommand::SetDigitalOut { pin, value, resp })
             .await?
     }
 
     async fn clear_fault(&self) -> Result<(), String> {
-        self.send_cmd(|resp| MotionKernelCommand::ClearFault { resp })
+        self.send_cmd(|resp| MotionEngineCommand::ClearFault { resp })
             .await
     }
 
     async fn move_l(&self, target: Pose6D, vel_mm_s: f64) -> Result<u64, String> {
-        self.send_cmd(|resp| MotionKernelCommand::MoveL {
+        self.send_cmd(|resp| MotionEngineCommand::MoveL {
             target,
             vel_mm_s,
             resp,
@@ -213,7 +213,7 @@ impl MotionKernelApi for MotionKernelClient {
     }
 
     async fn move_j(&self, target: MotionTarget, vel_deg_s: f64) -> Result<u64, String> {
-        self.send_cmd(|resp| MotionKernelCommand::MoveJ {
+        self.send_cmd(|resp| MotionEngineCommand::MoveJ {
             target,
             vel_deg_s,
             resp,
@@ -222,27 +222,27 @@ impl MotionKernelApi for MotionKernelClient {
     }
 
     async fn jog_step(&self, cmd: JogCommand) -> Result<u64, String> {
-        self.send_cmd(|resp| MotionKernelCommand::JogStep { cmd, resp })
+        self.send_cmd(|resp| MotionEngineCommand::JogStep { cmd, resp })
             .await?
     }
 
     async fn jog_hold(&self, cmd: JogCommand) -> Result<(), String> {
-        self.send_cmd(|resp| MotionKernelCommand::JogHold { cmd, resp })
+        self.send_cmd(|resp| MotionEngineCommand::JogHold { cmd, resp })
             .await?
     }
 
     async fn jog_stop(&self) -> Result<(), String> {
-        self.send_cmd(|resp| MotionKernelCommand::JogStop { resp })
+        self.send_cmd(|resp| MotionEngineCommand::JogStop { resp })
             .await
     }
 
     async fn set_motion_paused(&self, paused: bool) -> Result<(), String> {
-        self.send_cmd(|resp| MotionKernelCommand::SetMotionPaused { paused, resp })
+        self.send_cmd(|resp| MotionEngineCommand::SetMotionPaused { paused, resp })
             .await
     }
 
     async fn stop_motion(&self) -> Result<(), String> {
-        self.send_cmd(|resp| MotionKernelCommand::StopMotion { resp })
+        self.send_cmd(|resp| MotionEngineCommand::StopMotion { resp })
             .await
     }
 }

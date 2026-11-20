@@ -182,7 +182,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bass-compiler"
-version = "0.2.0"
+version = "1.1.0"
 dependencies = [
  "bass-motion",
  "bass-types",
@@ -194,15 +194,17 @@ dependencies = [
 
 [[package]]
 name = "bass-hal"
-version = "0.2.0"
+version = "1.1.0"
 dependencies = [
  "bass-types",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
 [[package]]
 name = "bass-interpreter"
-version = "0.2.0"
+version = "1.1.0"
 dependencies = [
  "bass-compiler",
  "bass-motion",
@@ -214,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "bass-logger"
-version = "0.2.0"
+version = "1.1.0"
 dependencies = [
  "chrono",
  "serde",
@@ -224,7 +226,7 @@ dependencies = [
 
 [[package]]
 name = "bass-motion"
-version = "0.2.0"
+version = "1.1.0"
 dependencies = [
  "bass-types",
  "nalgebra",
@@ -234,8 +236,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "bass-motion-kernel"
-version = "0.2.0"
+name = "bass-motion-engine"
+version = "1.1.0"
 dependencies = [
  "async-trait",
  "bass-hal",
@@ -250,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "bass-proto"
-version = "0.2.0"
+version = "1.1.0"
 dependencies = [
  "prost",
  "tonic",
@@ -260,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "bass-runtime"
-version = "0.2.0"
+version = "1.1.0"
 dependencies = [
  "axum",
  "bass-compiler",
@@ -268,7 +270,7 @@ dependencies = [
  "bass-interpreter",
  "bass-logger",
  "bass-motion",
- "bass-motion-kernel",
+ "bass-motion-engine",
  "bass-proto",
  "bass-types",
  "clap",
@@ -290,7 +292,7 @@ dependencies = [
 
 [[package]]
 name = "bass-types"
-version = "0.2.0"
+version = "1.1.0"
 dependencies = [
  "serde",
  "thiserror",

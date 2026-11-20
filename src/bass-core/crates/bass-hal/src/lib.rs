@@ -1,9 +1,12 @@
 //! # bass-hal
 //!
-//! HAL 硬件抽象层与定长二进制 UDP 现场总线驱动。
+//! HAL 硬件抽象层：包含 MuJoCo 4.0.1 C FFI 内置物理引擎驱动与定长二进制 UDP 现场总线驱动。
 //!
-//! 提供 `FieldbusTransport` Trait，将控制器内核与实际物理/仿真通信解耦，
-//! 并提供生产环境 UDP 驱动 `UdpFieldbusDriver` 及跨 crate 测试用的 `MockFieldbusTransport`。
+//! 提供 `FieldbusTransport` Trait，将实时运动引擎与实际物理/仿真通信解耦，
+//! 提供生产级内置物理驱动 `MujocoFfiDriver`、外部 UDP 驱动 `UdpFieldbusDriver` 及测试桩 `MockFieldbusTransport`。
+
+pub mod mujoco_ffi;
+pub use mujoco_ffi::{resolve_mujoco_lib_path, MujocoFfiDriver};
 
 use bass_types::{PdoError, RxPdo, TxPdo, RX_PDO_BYTES, TX_PDO_BYTES};
 use std::collections::VecDeque;
@@ -34,6 +37,10 @@ pub enum HalError {
         /// 实际发送字节数
         actual: usize,
     },
+
+    /// 内置 MuJoCo FFI 物理引擎初始化或运行错误
+    #[error("MuJoCo FFI 物理引擎错误: {0}")]
+    Mujoco(String),
 }
 
 /// 现场总线传输抽象 Trait

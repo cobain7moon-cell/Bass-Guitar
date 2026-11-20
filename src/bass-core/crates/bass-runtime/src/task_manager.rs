@@ -2,20 +2,20 @@
 //!
 //! 负责操作模式与安全联锁策略、4 阶段语义编译器联动、Rhai 任务调度、
 //! 单步/连续/暂停/复位行指针控制与状态快照发布，
-//! 并通过 `MotionKernelApi` 异步接口调用解耦的 `bass-motion-kernel`。
+//! 并通过 `MotionEngineApi` 异步接口调用解耦的 `bass-motion-engine`。
 
 use crate::state_machine::ControllerStateMachine;
 use bass_compiler::RobotCompiler;
 use bass_interpreter::{InterpreterEvent, MotionType, RhaiInterpreter, StepOutcome};
 use bass_logger::{LogCategory, LogManager};
 use bass_motion::Serial6DofKinematics;
-use bass_motion_kernel::{
-    MotionEvent, MotionKernelApi, MotionTelemetry, MOTION_CYCLE_DT_S, MOTION_CYCLE_MS,
+use bass_motion_engine::{
+    MotionEngineApi, MotionEvent, MotionTelemetry, MOTION_CYCLE_DT_S, MOTION_CYCLE_MS,
 };
 use bass_types::{InterpreterState, JogCommand, MotionTarget, OpMode, RobotStateSnapshot};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 /// 程序执行控制指令
@@ -177,7 +177,7 @@ pub fn validate_program_name(name: &str) -> Result<(), &'static str> {
 
 /// 控制器管理与任务调度核心
 pub struct TaskManager {
-    pub motion_api: Arc<dyn MotionKernelApi>,
+    pub motion_api: Arc<dyn MotionEngineApi>,
     pub compiler: Arc<RobotCompiler>,
     pub interpreter: RhaiInterpreter,
     pub state_machine: ControllerStateMachine,
@@ -195,7 +195,7 @@ pub struct TaskManager {
 
 impl TaskManager {
     pub fn new(
-        motion_api: Arc<dyn MotionKernelApi>,
+        motion_api: Arc<dyn MotionEngineApi>,
         kinematics: &Serial6DofKinematics,
         logger: LogManager,
         programs_dir: impl AsRef<Path>,
@@ -205,7 +205,7 @@ impl TaskManager {
     }
 
     pub fn with_compiler(
-        motion_api: Arc<dyn MotionKernelApi>,
+        motion_api: Arc<dyn MotionEngineApi>,
         kinematics: &Serial6DofKinematics,
         compiler: Arc<RobotCompiler>,
         logger: LogManager,
@@ -272,12 +272,48 @@ impl TaskManager {
         let _ = self.snapshot_tx.send(self.current_snapshot());
     }
 
+    fn publish_snapshot_throttled(
+        &self,
+        force: bool,
+        last_pub: &mut Option<(RobotStateSnapshot, Instant)>,
+    ) {
+        let now = Instant::now();
+        let active_prog = self
+            .interpreter
+            .loaded_program_name()
+            .unwrap_or(&self.current_program_name);
+        let should_send = if force {
+            true
+        } else if let Some((prev, prev_at)) = last_pub {
+            now.duration_since(*prev_at) >= Duration::from_millis(20)
+                || prev.op_mode != self.state_machine.op_mode
+                || prev.drives_on != self.state_machine.drives_on
+                || prev.emergency_stop != self.state_machine.emergency_stop
+                || prev.speed_override != self.state_machine.speed_override
+                || prev.interpreter_state != self.interpreter.state()
+                || prev.motion_state != self.latest_telemetry.motion_state
+                || prev.active_program != active_prog
+                || prev.current_line != self.interpreter.current_line()
+                || prev.digital_out != self.state_machine.digital_out
+                || prev.plant_online != self.state_machine.plant_online
+                || prev.status_message != self.state_machine.status_message
+        } else {
+            true
+        };
+        if should_send {
+            let snap = self.current_snapshot();
+            let _ = self.snapshot_tx.send(snap.clone());
+            *last_pub = Some((snap, now));
+        }
+    }
+
     fn sync_from_telemetry(&mut self) {
         let telem = self.motion_api.latest_telemetry();
         self.state_machine.drives_on = telem.drives_enabled;
         self.state_machine.emergency_stop = telem.estop_active;
         self.state_machine.speed_override = telem.speed_override;
         self.state_machine.plant_online = telem.plant_online;
+        self.state_machine.digital_out = telem.digital_out;
         self.interpreter.set_digital_inputs(telem.digital_in);
         self.latest_telemetry = telem;
     }
@@ -370,7 +406,7 @@ impl TaskManager {
                     self.interpreter.set_state(InterpreterState::Error);
                     self.state_machine.status_message = error.clone();
                     self.logger
-                        .error(LogCategory::Motion, "motion-kernel", error);
+                        .error(LogCategory::Motion, "motion-engine", error);
                 }
             }
             MotionEvent::SafetyTripped {
@@ -539,6 +575,12 @@ impl TaskManager {
 
         match command {
             TaskControlCommand::Run => {
+                if self.state_machine.op_mode != OpMode::Auto {
+                    return Err(
+                        "连续 RUN 运行需切换为 Auto 自动模式（Manual 模式下仅允许 STEP 单步调试）"
+                            .to_string(),
+                    );
+                }
                 if !self.state_machine.can_move() {
                     return Err("无法运行: 伺服未使能、处于急停或物理端离线".to_string());
                 }
@@ -884,8 +926,9 @@ impl TaskManager {
         let mut tick = tokio::time::interval(Duration::from_millis(MOTION_CYCLE_MS));
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        let mut last_pub: Option<(RobotStateSnapshot, Instant)> = None;
         self.sync_from_telemetry();
-        self.publish_snapshot();
+        self.publish_snapshot_throttled(true, &mut last_pub);
 
         loop {
             tokio::select! {
@@ -896,7 +939,7 @@ impl TaskManager {
                             self.drain_motion_events();
                             self.sync_from_telemetry();
                             self.advance_execution(0.0).await;
-                            self.publish_snapshot();
+                            self.publish_snapshot_throttled(true, &mut last_pub);
                         }
                         None => break,
                     }
@@ -908,7 +951,7 @@ impl TaskManager {
                             self.drain_motion_events();
                             self.sync_from_telemetry();
                             self.advance_execution(0.0).await;
-                            self.publish_snapshot();
+                            self.publish_snapshot_throttled(true, &mut last_pub);
                         }
                         Err(broadcast::error::RecvError::Lagged(skipped)) => {
                             self.logger.warn(
@@ -929,7 +972,7 @@ impl TaskManager {
                             }
                             self.sync_from_telemetry();
                             self.advance_execution(0.0).await;
-                            self.publish_snapshot();
+                            self.publish_snapshot_throttled(true, &mut last_pub);
                         }
                         Err(broadcast::error::RecvError::Closed) => break,
                     }
@@ -939,13 +982,13 @@ impl TaskManager {
                         break;
                     }
                     self.sync_from_telemetry();
-                    self.publish_snapshot();
+                    self.publish_snapshot_throttled(false, &mut last_pub);
                 }
                 _ = tick.tick() => {
                     self.drain_motion_events();
                     self.sync_from_telemetry();
                     self.advance_execution(MOTION_CYCLE_DT_S).await;
-                    self.publish_snapshot();
+                    self.publish_snapshot_throttled(false, &mut last_pub);
                 }
             }
         }
@@ -986,7 +1029,7 @@ fn build_snapshot(
 mod tests {
     use super::*;
     use bass_hal::MockFieldbusTransport;
-    use bass_motion_kernel::MotionKernel;
+    use bass_motion_engine::MotionEngine;
     use bass_types::{
         CoordSystem, Joints6D, MotionState, TxPdo, CTRL_FAULT_RESET, STAT_DRIVES_ENABLED,
         STAT_FAULT, STAT_PLANT_READY,
@@ -1021,7 +1064,7 @@ mod tests {
     }
 
     async fn drive_with_motion<F, R>(
-        mk: &mut MotionKernel<MockFieldbusTransport>,
+        mk: &mut MotionEngine<MockFieldbusTransport>,
         now: Instant,
         fut: F,
     ) -> R
@@ -1040,22 +1083,22 @@ mod tests {
     }
 
     async fn setup_pair() -> (
-        MotionKernel<MockFieldbusTransport>,
-        bass_motion_kernel::MotionKernelClient,
+        MotionEngine<MockFieldbusTransport>,
+        bass_motion_engine::MotionEngineClient,
         TaskManager,
         TaskHandle,
     ) {
         let kin = make_test_kinematics();
         let mock = MockFieldbusTransport::new();
         let logger = LogManager::in_memory(500);
-        let (mk, mk_client) = MotionKernel::new(kin.clone(), mock, logger.clone());
-        let api: Arc<dyn MotionKernelApi> = Arc::new(mk_client.clone());
+        let (mk, mk_client) = MotionEngine::new(kin.clone(), mock, logger.clone());
+        let api: Arc<dyn MotionEngineApi> = Arc::new(mk_client.clone());
         let (tm, handle) = TaskManager::new(api, &kin, logger, test_programs_dir()).unwrap();
         (mk, mk_client, tm, handle)
     }
 
     async fn step_pair(
-        mk: &mut MotionKernel<MockFieldbusTransport>,
+        mk: &mut MotionEngine<MockFieldbusTransport>,
         tm: &mut TaskManager,
         now: Instant,
     ) {
@@ -1194,6 +1237,16 @@ mod tests {
         assert!(!tm.state_machine.digital_out[2]);
         assert_eq!(tm.interpreter.state(), InterpreterState::Paused);
 
+        // Manual 模式下不允许直接 RUN 连续运行，切换为 Auto 后允许继续 RUN
+        let manual_run_err = drive_with_motion(
+            &mut mk,
+            now,
+            tm.execute_task_control(TaskControlCommand::Run, None),
+        )
+        .await;
+        assert!(manual_run_err.is_err());
+
+        drive_with_motion(&mut mk, now, tm.set_mode(OpMode::Auto)).await;
         drive_with_motion(
             &mut mk,
             now,
@@ -1555,6 +1608,7 @@ mod tests {
         mk.transport
             .push_tx_pdo(make_test_tx(1, 0, Joints6D::home().values));
         step_pair(&mut mk, &mut tm, now).await;
+        drive_with_motion(&mut mk, now, tm.set_mode(OpMode::Auto)).await;
         drive_with_motion(&mut mk, now, tm.set_drives_power(true))
             .await
             .unwrap();
@@ -1591,6 +1645,7 @@ mod tests {
         mk.transport
             .push_tx_pdo(make_test_tx(1, 0, Joints6D::home().values));
         step_pair(&mut mk, &mut tm, now).await;
+        drive_with_motion(&mut mk, now, tm.set_mode(OpMode::Auto)).await;
         drive_with_motion(&mut mk, now, tm.set_drives_power(true))
             .await
             .unwrap();
@@ -1621,6 +1676,9 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(tm.interpreter.state(), InterpreterState::Paused);
+
+        // 即使在暂停后切回 Manual 模式，只要任务尚未 Reset 也禁止点动
+        drive_with_motion(&mut mk, now, tm.set_mode(OpMode::Manual)).await;
 
         let jog_cmd = JogCommand {
             coord_system: CoordSystem::Cartesian,

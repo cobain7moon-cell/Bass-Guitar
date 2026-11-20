@@ -1,4 +1,4 @@
-"""解析 UR5e 等 6 轴机器人 JSON 参数文件 (robot_model.json) 并生成 MuJoCo 4.0.0 MJCF 仿真场景。"""
+"""解析 UR5e 等 6 轴机器人 JSON 参数文件 (robot_model.json) 并基于 MuJoCo 4.0.1 MjSpec 生成仿真场景。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import math
 from pathlib import Path
 from typing import Any
+import mujoco
 
 
 @dataclass(frozen=True)
@@ -312,12 +313,267 @@ def load_robot_model(json_path: str | Path) -> RobotChainSpec:
     )
 
 
-def _fmt_vec(vals: tuple[float, ...]) -> str:
-    return " ".join(f"{v:.7f}" for v in vals)
+_GEOM_SHAPE_MAP: dict[str, mujoco.mjtGeom] = {
+    "capsule": mujoco.mjtGeom.mjGEOM_CAPSULE,
+    "cylinder": mujoco.mjtGeom.mjGEOM_CYLINDER,
+    "box": mujoco.mjtGeom.mjGEOM_BOX,
+    "sphere": mujoco.mjtGeom.mjGEOM_SPHERE,
+}
 
 
 def _mesh_asset_name(filename: str) -> str:
     return Path(filename).stem
+
+
+def _apply_explicit_inertial(body: mujoco.MjsBody, inertial: InertialSpec) -> None:
+    """将 JSON 标定的质量、质心与主惯量写入 MjsBody 显式惯量属性。"""
+    body.explicitinertial = True
+    body.ipos = list(inertial.pos_m)
+    body.iquat = list(inertial.quat_wxyz)
+    body.mass = inertial.mass_kg
+    body.inertia = list(inertial.diaginertia)
+
+
+def _add_visual_meshes(
+    body: mujoco.MjsBody,
+    vis_default: mujoco.MjsDefault,
+    prefix: str,
+    meshes: list[MeshSpec],
+) -> None:
+    """为刚体挂载 group=2、零质量、无碰撞的视觉网格几何体。"""
+    for idx, mesh in enumerate(meshes):
+        body.add_geom(
+            vis_default,
+            name=f"{prefix}_vis_{idx}",
+            type=mujoco.mjtGeom.mjGEOM_MESH,
+            meshname=_mesh_asset_name(mesh.file),
+            rgba=list(mesh.rgba),
+        )
+
+
+def build_mujoco_spec(
+    spec: RobotChainSpec,
+    model_base_dir: str | Path | None = None,
+    timestep: float = 0.002,
+) -> mujoco.MjSpec:
+    """基于 MuJoCo 4.0.1 MjSpec 程序化构建 SI 弧度制 UR5e 工作站场景（含碰撞分层与 'home' 关键帧）。"""
+    resolved_base = Path(model_base_dir).resolve() if model_base_dir is not None else spec.base_dir
+    if resolved_base is not None:
+        mesh_dir_path = (resolved_base / spec.mesh_dir).resolve()
+    else:
+        mesh_dir_path = Path(spec.mesh_dir).resolve()
+
+    mj_spec = mujoco.MjSpec()
+    mj_spec.modelname = f"robot_{spec.robot_name}"
+    mj_spec.compiler.degree = False
+    mj_spec.compiler.meshdir = mesh_dir_path.as_posix()
+    mj_spec.compiler.autolimits = True
+
+    mj_spec.option.timestep = timestep
+    mj_spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+    mj_spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+    mj_spec.option.impratio = 10.0
+    mj_spec.option.gravity = [0.0, 0.0, -9.81]
+
+    mj_spec.visual.headlight.diffuse = [0.7, 0.7, 0.7]
+    mj_spec.visual.headlight.ambient = [0.3, 0.3, 0.3]
+    mj_spec.visual.headlight.specular = [0.2, 0.2, 0.2]
+    mj_spec.visual.rgba.haze = [0.15, 0.2, 0.25, 1.0]
+    mj_spec.visual.global_.azimuth = 135.0
+    mj_spec.visual.global_.elevation = -25.0
+
+    # 分离 group="2" 视觉几何（零质量/无碰撞）与 group="3" 碰撞包络
+    visual_def = mj_spec.add_default("visual", mj_spec.default)
+    visual_def.geom.group = 2
+    visual_def.geom.contype = 0
+    visual_def.geom.conaffinity = 0
+    visual_def.geom.density = 0.0
+    visual_def.geom.mass = 0.0
+
+    collision_def = mj_spec.add_default("collision", mj_spec.default)
+    collision_def.geom.group = 3
+    collision_def.geom.contype = 1
+    collision_def.geom.conaffinity = 1
+    collision_def.geom.condim = 4
+    collision_def.geom.friction = [0.8, 0.02, 0.005]
+    collision_def.geom.solref = [max(0.005, 2.0 * timestep), 1.0]
+    collision_def.geom.rgba = [0.20, 0.75, 0.35, 0.50]
+
+    mj_spec.add_texture(
+        name="skybox",
+        type=mujoco.mjtTexture.mjTEXTURE_SKYBOX,
+        builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT,
+        rgb1=[0.20, 0.26, 0.34],
+        rgb2=[0.06, 0.08, 0.12],
+        width=512,
+        height=3072,
+    )
+    mj_spec.add_texture(
+        name="groundplane",
+        type=mujoco.mjtTexture.mjTEXTURE_2D,
+        builtin=mujoco.mjtBuiltin.mjBUILTIN_CHECKER,
+        mark=mujoco.mjtMark.mjMARK_EDGE,
+        rgb1=[0.22, 0.25, 0.28],
+        rgb2=[0.16, 0.18, 0.20],
+        markrgb=[0.35, 0.38, 0.42],
+        width=300,
+        height=300,
+    )
+    mj_spec.add_material(
+        name="groundplane",
+        textures=["", "groundplane"],
+        texuniform=True,
+        texrepeat=[5.0, 5.0],
+        reflectance=0.1,
+    )
+
+    seen_files: set[str] = set()
+    for mesh in spec.base_visual.meshes + [m for joint in spec.joints for m in joint.meshes]:
+        if mesh.file not in seen_files:
+            seen_files.add(mesh.file)
+            mj_spec.add_mesh(name=_mesh_asset_name(mesh.file), file=mesh.file)
+
+    mj_spec.worldbody.add_light(
+        name="main_light",
+        pos=[1.0, -1.0, 2.2],
+        dir=[-0.4, 0.4, -0.8],
+        type=mujoco.mjtLightType.mjLIGHT_DIRECTIONAL,
+    )
+    mj_spec.worldbody.add_geom(
+        name="floor",
+        type=mujoco.mjtGeom.mjGEOM_PLANE,
+        size=[2.0, 2.0, 0.05],
+        material="groundplane",
+        contype=1,
+        conaffinity=1,
+        group=0,
+    )
+
+    wt = spec.environment.worktable
+    wt_body = mj_spec.worldbody.add_body(name="worktable", pos=list(wt.pos_m))
+    wt_body.add_geom(
+        visual_def,
+        name="table_top_vis",
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=list(wt.half_size_m),
+        rgba=[0.30, 0.34, 0.38, 0.85],
+    )
+    wt_body.add_geom(
+        collision_def,
+        name="table_top_col",
+        type=mujoco.mjtGeom.mjGEOM_BOX,
+        size=list(wt.half_size_m),
+        rgba=[0.25, 0.55, 0.90, 0.45],
+        density=0.0,
+        mass=0.0,
+    )
+
+    tgt_body = mj_spec.worldbody.add_body(
+        name="target_marker",
+        mocap=True,
+        pos=list(spec.environment.target_marker_pos_m),
+    )
+    tgt_body.add_site(
+        name="target_site",
+        type=mujoco.mjtGeom.mjGEOM_SPHERE,
+        size=[0.015],
+        rgba=[1.0, 0.2, 0.2, 0.50],
+        group=4,
+    )
+
+    base_body = mj_spec.worldbody.add_body(
+        name=spec.base_visual.body_name,
+        pos=list(spec.base_transform.pos_m),
+        quat=list(spec.base_transform.quat_wxyz),
+    )
+    _apply_explicit_inertial(base_body, spec.base_visual.inertial)
+    base_body.add_geom(
+        visual_def,
+        name="base_pedestal_plate",
+        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+        pos=[0.0, 0.0, -0.008],
+        size=[0.095, 0.008, 0.0],
+        rgba=[0.15, 0.16, 0.18, 1.0],
+    )
+    _add_visual_meshes(base_body, visual_def, spec.base_visual.body_name, spec.base_visual.meshes)
+
+    parent_body = base_body
+    for joint in spec.joints:
+        link_body = parent_body.add_body(
+            name=joint.body_name,
+            pos=list(joint.pos_m),
+            quat=list(joint.quat_wxyz),
+        )
+        _apply_explicit_inertial(link_body, joint.inertial)
+
+        j_min_rad = math.radians(joint.limits_deg[0])
+        j_max_rad = math.radians(joint.limits_deg[1])
+        link_body.add_joint(
+            name=joint.name,
+            type=mujoco.mjtJoint.mjJNT_HINGE,
+            axis=list(joint.axis),
+            range=[j_min_rad, j_max_rad],
+            damping=joint.damping,
+            armature=joint.armature,
+        )
+        _add_visual_meshes(link_body, visual_def, joint.body_name, joint.meshes)
+
+        for ci, col in enumerate(joint.collisions):
+            geom_type = _GEOM_SHAPE_MAP.get(col.shape.lower(), mujoco.mjtGeom.mjGEOM_CAPSULE)
+            link_body.add_geom(
+                collision_def,
+                name=f"{joint.body_name}_col_{ci}",
+                type=geom_type,
+                size=[col.size_m[0], col.size_m[1], 0.0],
+                pos=list(col.pos_m),
+                quat=list(col.quat_wxyz),
+                density=0.0,
+                mass=0.0,
+            )
+
+        actuator = mj_spec.add_actuator(
+            name=f"act_J{joint.id}",
+            target=joint.name,
+            trntype=mujoco.mjtTrn.mjTRN_JOINT,
+        )
+        actuator.set_to_position(kp=joint.kp, kv=joint.kv)
+        actuator.forcelimited = True
+        actuator.forcerange = [-joint.force_limit_nm, joint.force_limit_nm]
+        actuator.ctrllimited = True
+        actuator.ctrlrange = [j_min_rad, j_max_rad]
+
+        parent_body = link_body
+
+    fl = spec.flange_transform
+    tx, ty, tz = (v / 1000.0 for v in spec.tcp_offset_mm)
+    flange_body = parent_body.add_body(name="flange", pos=list(fl.pos_m), quat=list(fl.quat_wxyz))
+    flange_body.add_geom(
+        visual_def,
+        name="flange_plate",
+        type=mujoco.mjtGeom.mjGEOM_CYLINDER,
+        pos=[0.0, 0.0, 0.004],
+        size=[0.032, 0.008, 0.0],
+        rgba=[0.25, 0.27, 0.30, 1.0],
+    )
+    flange_body.add_geom(
+        visual_def,
+        name="tcp_pointer",
+        type=mujoco.mjtGeom.mjGEOM_CAPSULE,
+        fromto=[0.0, 0.0, 0.0, tx, ty, tz],
+        size=[0.007, 0.0, 0.0],
+        rgba=[0.1, 0.85, 0.4, 1.0],
+    )
+    flange_body.add_site(
+        name="tcp_site",
+        pos=[tx, ty, tz],
+        size=[0.012],
+        rgba=[0.0, 1.0, 0.4, 0.45],
+        group=4,
+    )
+
+    home_rad = [math.radians(deg) for deg in spec.home_joints_deg]
+    mj_spec.add_key(name="home", qpos=home_rad, ctrl=home_rad)
+    return mj_spec
 
 
 def build_mujoco_xml(
@@ -325,164 +581,5 @@ def build_mujoco_xml(
     model_base_dir: str | Path | None = None,
     timestep: float = 0.002,
 ) -> str:
-    """根据 RobotChainSpec 生成包含 UR5e OBJ 视觉网格与伺服执行器的 MuJoCo 4.0 MJCF XML。"""
-    resolved_base = Path(model_base_dir).resolve() if model_base_dir is not None else spec.base_dir
-    if resolved_base is not None:
-        mesh_dir_path = (resolved_base / spec.mesh_dir).resolve()
-    else:
-        mesh_dir_path = Path(spec.mesh_dir).resolve()
-
-    # 收集去重后的所有视觉网格文件名
-    mesh_files: list[str] = []
-    seen_files: set[str] = set()
-    for mesh in spec.base_visual.meshes:
-        if mesh.file not in seen_files:
-            seen_files.add(mesh.file)
-            mesh_files.append(mesh.file)
-    for joint in spec.joints:
-        for mesh in joint.meshes:
-            if mesh.file not in seen_files:
-                seen_files.add(mesh.file)
-                mesh_files.append(mesh.file)
-
-    mesh_assets_xml = "\n".join(
-        f'    <mesh name="{_mesh_asset_name(fname)}" file="{fname}"/>' for fname in mesh_files
-    )
-
-    def build_link_tree(idx: int, indent: int) -> str:
-        pad = " " * indent
-        joint = spec.joints[idx]
-        j_min, j_max = joint.limits_deg
-
-        lines = [
-            f'{pad}<body name="{joint.body_name}" pos="{_fmt_vec(joint.pos_m)}" quat="{_fmt_vec(joint.quat_wxyz)}">',
-            (
-                f'{pad}  <inertial pos="{_fmt_vec(joint.inertial.pos_m)}" '
-                f'quat="{_fmt_vec(joint.inertial.quat_wxyz)}" '
-                f'mass="{joint.inertial.mass_kg:.6f}" '
-                f'diaginertia="{_fmt_vec(joint.inertial.diaginertia)}"/>'
-            ),
-            (
-                f'{pad}  <joint name="{joint.name}" type="hinge" axis="{_fmt_vec(joint.axis)}" '
-                f'range="{j_min:.2f} {j_max:.2f}" damping="{joint.damping:.4f}" armature="{joint.armature:.4f}"/>'
-            ),
-        ]
-
-        for mesh in joint.meshes:
-            lines.append(
-                f'{pad}  <geom type="mesh" mesh="{_mesh_asset_name(mesh.file)}" '
-                f'rgba="{_fmt_vec(mesh.rgba)}" contype="0" conaffinity="0" group="2"/>'
-            )
-
-        for col in joint.collisions:
-            lines.append(
-                f'{pad}  <geom type="{col.shape}" size="{col.size_m[0]:.4f} {col.size_m[1]:.4f}" '
-                f'pos="{_fmt_vec(col.pos_m)}" quat="{_fmt_vec(col.quat_wxyz)}" '
-                f'rgba="0.6 0.6 0.6 0.15" contype="0" conaffinity="0" group="3"/>'
-            )
-
-        if idx < 5:
-            lines.append(build_link_tree(idx + 1, indent + 2))
-        else:
-            fl = spec.flange_transform
-            tx, ty, tz = (
-                spec.tcp_offset_mm[0] / 1000.0,
-                spec.tcp_offset_mm[1] / 1000.0,
-                spec.tcp_offset_mm[2] / 1000.0,
-            )
-            lines.extend(
-                [
-                    f'{pad}  <body name="flange" pos="{_fmt_vec(fl.pos_m)}" quat="{_fmt_vec(fl.quat_wxyz)}">',
-                    (
-                        f'{pad}    <geom name="flange_plate" type="cylinder" size="0.032 0.008" '
-                        f'pos="0 0 0.004" rgba="0.25 0.27 0.30 1" contype="0" conaffinity="0" group="2"/>'
-                    ),
-                    (
-                        f'{pad}    <geom name="tcp_pointer" type="capsule" fromto="0 0 0 {tx:.5f} {ty:.5f} {tz:.5f}" '
-                        f'size="0.007" rgba="0.1 0.85 0.4 1" contype="0" conaffinity="0" group="2"/>'
-                    ),
-                    (
-                        f'{pad}    <site name="tcp_site" pos="{tx:.5f} {ty:.5f} {tz:.5f}" '
-                        f'size="0.012" rgba="0.0 1.0 0.4 1"/>'
-                    ),
-                    f"{pad}  </body>",
-                ]
-            )
-
-        lines.append(f"{pad}</body>")
-        return "\n".join(lines)
-
-    body_tree = build_link_tree(0, 6)
-
-    base_meshes_xml = "\n".join(
-        f'      <geom type="mesh" mesh="{_mesh_asset_name(m.file)}" rgba="{_fmt_vec(m.rgba)}" '
-        f'contype="0" conaffinity="0" group="2"/>'
-        for m in spec.base_visual.meshes
-    )
-
-    actuators: list[str] = []
-    for joint in spec.joints:
-        j_min, j_max = joint.limits_deg
-        f_lim = joint.force_limit_nm
-        actuators.append(
-            f'    <position name="act_J{joint.id}" joint="{joint.name}" kp="{joint.kp:.1f}" kv="{joint.kv:.1f}" '
-            f'forcerange="-{f_lim:.1f} {f_lim:.1f}" ctrlrange="{j_min:.2f} {j_max:.2f}"/>'
-        )
-    actuators_xml = "\n".join(actuators)
-
-    wt = spec.environment.worktable
-    tgt_pos_m = spec.environment.target_marker_pos_m
-
-    return f"""<mujoco model="robot_{spec.robot_name}">
-  <compiler angle="degree" coordinate="local" meshdir="{mesh_dir_path.as_posix()}"/>
-  <option timestep="{timestep:.4f}" integrator="implicitfast" gravity="0 0 -9.81"/>
-
-  <visual>
-    <headlight diffuse="0.7 0.7 0.7" ambient="0.3 0.3 0.3" specular="0.2 0.2 0.2"/>
-    <rgba haze="0.15 0.2 0.25 1"/>
-    <global azimuth="135" elevation="-25"/>
-  </visual>
-
-  <asset>
-    <texture type="skybox" builtin="gradient" rgb1="0.20 0.26 0.34" rgb2="0.06 0.08 0.12"
-             width="512" height="3072"/>
-    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.22 0.25 0.28"
-             rgb2="0.16 0.18 0.20" markrgb="0.35 0.38 0.42" width="300" height="300"/>
-    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.1"/>
-{mesh_assets_xml}
-  </asset>
-
-  <worldbody>
-    <light pos="1.0 -1.0 2.2" dir="-0.4 0.4 -0.8" directional="true"/>
-    <geom name="floor" size="2.0 2.0 0.05" type="plane" material="groundplane" contype="0" conaffinity="0"/>
-
-    <!-- 工作台参考面 -->
-    <body name="worktable" pos="{_fmt_vec(wt.pos_m)}">
-      <geom name="table_top" type="box" size="{_fmt_vec(wt.half_size_m)}" rgba="0.30 0.34 0.38 0.85"
-            contype="0" conaffinity="0"/>
-    </body>
-
-    <!-- 目标点可视化球体 -->
-    <body name="target_marker" mocap="true" pos="{_fmt_vec(tgt_pos_m)}">
-      <site name="target_site" type="sphere" size="0.015" rgba="1.0 0.2 0.2 0.85"/>
-    </body>
-
-    <!-- 开源 {spec.robot_name} ({spec.license}) 基座 -->
-    <body name="{spec.base_visual.body_name}" pos="{_fmt_vec(spec.base_transform.pos_m)}"
-          quat="{_fmt_vec(spec.base_transform.quat_wxyz)}">
-      <inertial pos="{_fmt_vec(spec.base_visual.inertial.pos_m)}"
-                quat="{_fmt_vec(spec.base_visual.inertial.quat_wxyz)}"
-                mass="{spec.base_visual.inertial.mass_kg:.6f}"
-                diaginertia="{_fmt_vec(spec.base_visual.inertial.diaginertia)}"/>
-      <geom name="base_pedestal_plate" type="cylinder" pos="0 0 -0.008" size="0.095 0.008"
-            rgba="0.15 0.16 0.18 1" contype="0" conaffinity="0" group="2"/>
-{base_meshes_xml}
-{body_tree}
-    </body>
-  </worldbody>
-
-  <actuator>
-{actuators_xml}
-  </actuator>
-</mujoco>
-"""
+    """生成基于 MjSpec 的标准 MJCF XML 字符串（兼容需要 XML 文本的调用方）。"""
+    return build_mujoco_spec(spec, model_base_dir=model_base_dir, timestep=timestep).to_xml()

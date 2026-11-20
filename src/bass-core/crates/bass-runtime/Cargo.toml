@@ -7,7 +7,7 @@ license.workspace = true
 [dependencies]
 bass-types = { path = "../bass-types" }
 bass-proto = { path = "../bass-proto" }
-bass-motion-kernel = { path = "../bass-motion-kernel" }
+bass-motion-engine = { path = "../bass-motion-engine" }
 bass-motion = { path = "../bass-motion" }
 bass-compiler = { path = "../bass-compiler" }
 bass-interpreter = { path = "../bass-interpreter" }

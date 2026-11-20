@@ -8,13 +8,13 @@ members = [
     "crates/bass-compiler",
     "crates/bass-interpreter",
     "crates/bass-proto",
-    "crates/bass-motion-kernel",
+    "crates/bass-motion-engine",
     "crates/bass-runtime",
 ]
 
 [workspace.package]
 edition = "2021"
-version = "0.2.0"
+version = "1.1.0"
 license = "MIT"
 
 [workspace.dependencies]
