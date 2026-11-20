@@ -42,13 +42,32 @@ watch(canJog, (ok) => {
 // Hold-to-Jog 心跳管理
 let holdIntervalTimer: number | null = null;
 const activeHoldingAxis = ref<string | null>(null);
+const jogError = ref<string | null>(null);
+let capturedEl: HTMLElement | null = null;
+let capturedPointerId: number | null = null;
 
-function startHoldJog(axis: string, direction: number) {
+function reportJogError(err: unknown, fallback: string) {
+  jogError.value = err instanceof Error ? err.message : fallback;
+}
+
+function startHoldJog(ev: PointerEvent, axis: string, direction: number) {
   if (!canJog.value) return;
   if (jogType.value !== 'HOLD') return;
 
   // 清除任何旧定时器
   stopHoldJog();
+  jogError.value = null;
+
+  const target = ev.currentTarget as HTMLElement | null;
+  if (target?.setPointerCapture) {
+    try {
+      target.setPointerCapture(ev.pointerId);
+      capturedEl = target;
+      capturedPointerId = ev.pointerId;
+    } catch {
+      // 某些模拟事件可能无 pointerId 捕获权限，依赖 window blur 兜底
+    }
+  }
 
   const cmd: JogCommand = {
     coord_system: coordSystem.value,
@@ -60,28 +79,55 @@ function startHoldJog(axis: string, direction: number) {
   activeHoldingAxis.value = `${axis}_${direction > 0 ? '+' : '-'}`;
 
   // 立即发出第一次心跳
-  api.jogHold(cmd).catch(() => {});
+  api
+    .jogHold(cmd)
+    .then((res) => {
+      if (!res.ok && res.error) {
+        jogError.value = res.error;
+        stopHoldJog();
+      }
+    })
+    .catch((err) => reportJogError(err, 'Hold 点动指令发送失败'));
 
   // 每 60ms 续期一次心跳
   holdIntervalTimer = window.setInterval(() => {
-    api.jogHold(cmd).catch(() => {});
+    api
+      .jogHold(cmd)
+      .then((res) => {
+        if (!res.ok && res.error) {
+          jogError.value = res.error;
+          stopHoldJog();
+        }
+      })
+      .catch((err) => reportJogError(err, 'Hold 点动续期失败'));
   }, 60);
 }
 
 function stopHoldJog() {
+  if (capturedEl && capturedPointerId !== null && capturedEl.releasePointerCapture) {
+    try {
+      capturedEl.releasePointerCapture(capturedPointerId);
+    } catch {
+      // ignore if already released
+    }
+  }
+  capturedEl = null;
+  capturedPointerId = null;
+
   if (holdIntervalTimer !== null) {
     clearInterval(holdIntervalTimer);
     holdIntervalTimer = null;
   }
   if (activeHoldingAxis.value !== null) {
     activeHoldingAxis.value = null;
-    api.jogStop().catch(() => {});
+    api.jogStop().catch((err) => reportJogError(err, '停止点动请求失败'));
   }
 }
 
 function handleStepJog(axis: string, direction: number) {
   if (!canJog.value) return;
   if (jogType.value !== 'STEP') return;
+  jogError.value = null;
 
   const cmd: JogCommand = {
     coord_system: coordSystem.value,
@@ -90,15 +136,30 @@ function handleStepJog(axis: string, direction: number) {
     step_size: currentStepSize.value,
   };
 
-  api.jogStep(cmd).catch(() => {});
+  api
+    .jogStep(cmd)
+    .then((res) => {
+      if (!res.ok && res.error) {
+        jogError.value = res.error;
+      }
+    })
+    .catch((err) => reportJogError(err, '步进点动指令发送失败'));
 }
 
 // DOUT 手动翻转控制
 async function toggleDout(index: number) {
   if (props.snapshot.op_mode !== 'MANUAL') return;
+  jogError.value = null;
   const pin = index + 1; // 1-indexed
   const curState = props.snapshot.digital_out[index] ?? false;
-  await api.setDout(pin, !curState);
+  try {
+    const res = await api.setDout(pin, !curState);
+    if (!res.ok && res.error) {
+      jogError.value = res.error;
+    }
+  } catch (err) {
+    reportJogError(err, `切换 DOUT[${pin}] 失败`);
+  }
 }
 
 // 笛卡尔轴定义
@@ -324,7 +385,7 @@ onBeforeUnmount(() => {
                   holding: activeHoldingAxis === `${axis.name}_-`,
                 }"
                 :disabled="!canJog"
-                @pointerdown="startHoldJog(axis.name, -1)"
+                @pointerdown="startHoldJog($event, axis.name, -1)"
                 @pointerup="stopHoldJog"
                 @pointerleave="stopHoldJog"
                 @pointercancel="stopHoldJog"
@@ -341,7 +402,7 @@ onBeforeUnmount(() => {
                   holding: activeHoldingAxis === `${axis.name}_+`,
                 }"
                 :disabled="!canJog"
-                @pointerdown="startHoldJog(axis.name, 1)"
+                @pointerdown="startHoldJog($event, axis.name, 1)"
                 @pointerup="stopHoldJog"
                 @pointerleave="stopHoldJog"
                 @pointercancel="stopHoldJog"
@@ -368,7 +429,7 @@ onBeforeUnmount(() => {
                   holding: activeHoldingAxis === `${axis.name}_-`,
                 }"
                 :disabled="!canJog"
-                @pointerdown="startHoldJog(axis.name, -1)"
+                @pointerdown="startHoldJog($event, axis.name, -1)"
                 @pointerup="stopHoldJog"
                 @pointerleave="stopHoldJog"
                 @pointercancel="stopHoldJog"
@@ -385,7 +446,7 @@ onBeforeUnmount(() => {
                   holding: activeHoldingAxis === `${axis.name}_+`,
                 }"
                 :disabled="!canJog"
-                @pointerdown="startHoldJog(axis.name, 1)"
+                @pointerdown="startHoldJog($event, axis.name, 1)"
                 @pointerup="stopHoldJog"
                 @pointerleave="stopHoldJog"
                 @pointercancel="stopHoldJog"
@@ -400,7 +461,8 @@ onBeforeUnmount(() => {
 
       <!-- 点动就绪提示信息 -->
       <div class="jog-status-footer">
-        <span v-if="!canJog" class="warn-text">
+        <span v-if="jogError" class="warn-text">⚠️ {{ jogError }}</span>
+        <span v-else-if="!canJog" class="warn-text">
           ⚠️ 点动未就绪：请确保处于 MANUAL 手动模式、伺服上电 (Drives ON) 且急停已复位。
         </span>
         <span v-else-if="jogType === 'HOLD'" class="tip-text">

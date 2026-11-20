@@ -10,12 +10,14 @@ import {
   LogExportFormat as PbLogExportFormat,
   LogLevel as PbLogLevel,
   LogService,
+  MotionService,
   MotionState as PbMotionState,
   OpMode as PbOpMode,
   TaskControlCommand as PbTaskControlCommand,
   TaskService,
   type CompileReport as PbCompileReport,
   type LogEntry as PbLogEntry,
+  type MotionTelemetry as PbMotionTelemetry,
   type RobotStateSnapshot as PbRobotStateSnapshot,
 } from '../gen/bass_controller_pb';
 import type {
@@ -34,10 +36,12 @@ import type {
   LogsListResp,
   ModeResp,
   MotionState,
+  MotionTelemetryData,
   OpMode,
   OverrideResp,
   PowerResp,
   ProgramDetailResp,
+  RobotModelConfig,
   RobotProgramIR,
   RobotStateSnapshot,
   SimpleResp,
@@ -56,6 +60,7 @@ const transport = createGrpcWebTransport({
 const controllerClient = createClient(ControllerService, transport);
 const taskClient = createClient(TaskService, transport);
 const logClient = createClient(LogService, transport);
+const motionClient = createClient(MotionService, transport);
 
 function mapOpMode(mode: PbOpMode): OpMode {
   return mode === PbOpMode.AUTO ? 'AUTO' : 'MANUAL';
@@ -148,6 +153,38 @@ function mapSnapshot(pb: PbRobotStateSnapshot): RobotStateSnapshot {
     cycle_count: Number(pb.cycleCount),
     sim_tick: Number(pb.simTick),
     status_message: pb.statusMessage,
+  };
+}
+
+function mapMotionTelemetry(pb: PbMotionTelemetry): MotionTelemetryData {
+  const pose = pb.cartActual;
+  return {
+    drives_enabled: pb.drivesEnabled,
+    estop_active: pb.estopActive,
+    speed_override: pb.speedOverride,
+    motion_state: mapMotionState(pb.motionState),
+    paused: pb.paused,
+    active_motion_id: pb.activeMotionId !== undefined ? Number(pb.activeMotionId) : null,
+    joint_actual: toFixed6(pb.jointActual),
+    joint_cmd: toFixed6(pb.jointCmd),
+    joint_velocity: toFixed6(pb.jointVelocity),
+    joint_torque: toFixed6(pb.jointTorque),
+    cart_actual: {
+      x: pose?.x ?? 0,
+      y: pose?.y ?? 0,
+      z: pose?.z ?? 0,
+      a: pose?.a ?? 0,
+      b: pose?.b ?? 0,
+      c: pose?.c ?? 0,
+    },
+    digital_out: toFixed8Bool(pb.digitalOut),
+    digital_in: pb.digitalIn,
+    plant_online: pb.plantOnline,
+    plant_fault_active: pb.plantFaultActive,
+    last_fault_code: pb.lastFaultCode,
+    rtt_ms: pb.rttMs,
+    cycle_count: Number(pb.cycleCount),
+    sim_tick: Number(pb.simTick),
   };
 }
 
@@ -502,6 +539,19 @@ export const api = {
     const resp = await logClient.clearLogs({});
     return { ok: resp.ok, error: resp.error || undefined };
   },
+
+  async fetchMotionTelemetry(): Promise<MotionTelemetryData> {
+    const resp = await motionClient.getMotionTelemetry({});
+    return mapMotionTelemetry(resp);
+  },
+
+  async fetchRobotModelConfig(): Promise<RobotModelConfig> {
+    const resp = await fetch('/robot-assets/config/robot_model.json');
+    if (!resp.ok) {
+      throw new Error(`加载机器人 3D 模型配置失败 (HTTP ${resp.status})`);
+    }
+    return (await resp.json()) as RobotModelConfig;
+  },
 };
 
 /// 基于 gRPC-Web Server Streaming 的 25Hz 状态遥测订阅客户端
@@ -550,6 +600,90 @@ export class TelemetryClient {
       }
     } catch {
       // 网络波动或主动取消时走统一重连逻辑
+    } finally {
+      if (this.abortCtrl === ctrl) {
+        this.abortCtrl = null;
+      }
+      this.onStatusCb?.(false);
+      if (this.shouldReconnect && !ctrl.signal.aborted) {
+        this.scheduleReconnect();
+      }
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (!this.shouldReconnect || this.reconnectTimer !== null) return;
+    this.reconnectTimer = window.setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.shouldReconnect) {
+        void this.startStream();
+      }
+    }, 1500);
+  }
+
+  public disconnect(): void {
+    this.shouldReconnect = false;
+    if (this.reconnectTimer !== null) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.abortCtrl) {
+      this.abortCtrl.abort();
+      this.abortCtrl = null;
+    }
+    this.onStatusCb?.(false);
+  }
+}
+
+/// 直连 MotionService 的 40Hz 实时运动引擎物理遥测订阅客户端（驱动内嵌 3D 视窗）
+export class MotionTelemetryClient {
+  private abortCtrl: AbortController | null = null;
+  private shouldReconnect = true;
+  private reconnectTimer: number | null = null;
+  private onTelemetryCb?: (telem: MotionTelemetryData) => void;
+  private onStatusCb?: (connected: boolean) => void;
+  private intervalMs: number;
+
+  constructor(
+    onTelemetry: (telem: MotionTelemetryData) => void,
+    onStatusChange?: (connected: boolean) => void,
+    intervalMs = 25,
+  ) {
+    this.onTelemetryCb = onTelemetry;
+    this.onStatusCb = onStatusChange;
+    this.intervalMs = intervalMs;
+  }
+
+  public connect(): void {
+    this.shouldReconnect = true;
+    void this.startStream();
+  }
+
+  private async startStream(): Promise<void> {
+    if (this.abortCtrl) {
+      this.abortCtrl.abort();
+      this.abortCtrl = null;
+    }
+
+    const ctrl = new AbortController();
+    this.abortCtrl = ctrl;
+    let opened = false;
+
+    try {
+      const stream = motionClient.subscribeMotionTelemetry(
+        { intervalMs: this.intervalMs },
+        { signal: ctrl.signal },
+      );
+      for await (const msg of stream) {
+        if (ctrl.signal.aborted) break;
+        if (!opened) {
+          opened = true;
+          this.onStatusCb?.(true);
+        }
+        this.onTelemetryCb?.(mapMotionTelemetry(msg));
+      }
+    } catch {
+      // 断线自动重连
     } finally {
       if (this.abortCtrl === ctrl) {
         this.abortCtrl = null;

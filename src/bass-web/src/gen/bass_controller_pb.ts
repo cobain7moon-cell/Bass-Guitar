@@ -1919,7 +1919,7 @@ export const LogService: GenService<{
   serviceDesc(file_bass_controller, 2);
 
 /**
- * 运动内核对外开放的 gRPC 运动能力服务（同进程高实时主链路 + 外部直接调用接口）
+ * 实时运动引擎对外开放的 gRPC 运动能力服务（同进程高实时主链路 + 外部直接调用接口）
  *
  * @generated from service bass.controller.v1.MotionService
  */

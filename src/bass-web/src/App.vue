@@ -4,6 +4,7 @@ import type { RobotStateSnapshot } from './types';
 import { api, TelemetryClient } from './api/client';
 import TopStatusBar from './components/TopStatusBar.vue';
 import ProgramEditor from './components/ProgramEditor.vue';
+import RobotViewport3D from './components/RobotViewport3D.vue';
 import MonitorAndJog from './components/MonitorAndJog.vue';
 import LogPanel from './components/LogPanel.vue';
 
@@ -28,22 +29,35 @@ const defaultSnapshot: RobotStateSnapshot = {
 };
 
 const snapshot = ref<RobotStateSnapshot>(defaultSnapshot);
-const wsConnected = ref<boolean>(false);
+const streamConnected = ref<boolean>(false);
 const rightTab = ref<'monitor' | 'logs'>('monitor');
+const viewportExpanded = ref<boolean>(false);
+const uiActionError = ref<string | null>(null);
 
 let telemetryClient: TelemetryClient | null = null;
 let pollFallbackTimer: number | null = null;
+let errorClearTimer: number | null = null;
 
 function handleSnapshot(newSnap: RobotStateSnapshot) {
   snapshot.value = newSnap;
 }
 
 function handleStatus(connected: boolean) {
-  wsConnected.value = connected;
+  streamConnected.value = connected;
 }
 
 function onOverrideUpdate(val: number) {
   snapshot.value.speed_override = val;
+}
+
+function handleActionError(msg: string) {
+  uiActionError.value = msg;
+  if (errorClearTimer !== null) {
+    clearTimeout(errorClearTimer);
+  }
+  errorClearTimer = window.setTimeout(() => {
+    uiActionError.value = null;
+  }, 5000);
 }
 
 onMounted(async () => {
@@ -52,16 +66,16 @@ onMounted(async () => {
     const initSnap = await api.fetchState();
     snapshot.value = initSnap;
   } catch {
-    // 后续由 WebSocket 补齐
+    // 后续由 gRPC-Web 订阅补齐
   }
 
-  // 启动高频 WebSocket 状态推流
+  // 启动高频 gRPC-Web Server Streaming 状态推流
   telemetryClient = new TelemetryClient(handleSnapshot, handleStatus);
   telemetryClient.connect();
 
-  // 若 WebSocket 断线，低频轮询作为后备保护
+  // 若流连接中断，低频轮询作为后备保护
   pollFallbackTimer = window.setInterval(async () => {
-    if (!wsConnected.value) {
+    if (!streamConnected.value) {
       try {
         const snap = await api.fetchState();
         snapshot.value = snap;
@@ -81,59 +95,80 @@ onBeforeUnmount(() => {
     clearInterval(pollFallbackTimer);
     pollFallbackTimer = null;
   }
+  if (errorClearTimer !== null) {
+    clearTimeout(errorClearTimer);
+    errorClearTimer = null;
+  }
 });
 </script>
 
 <template>
   <div class="bass-app">
     <!-- 顶部工业状态与安全控制栏 -->
-    <TopStatusBar :snapshot="snapshot" @update:override="onOverrideUpdate" />
+    <TopStatusBar
+      :snapshot="snapshot"
+      @update:override="onOverrideUpdate"
+      @action-error="handleActionError"
+    />
 
     <!-- 控制器系统消息与告警条 -->
     <div
       class="system-message-bar"
       :class="{
-        'is-error': snapshot.interpreter_state === 'ERROR' || snapshot.emergency_stop || !snapshot.plant_online,
+        'is-error':
+          Boolean(uiActionError) ||
+          snapshot.interpreter_state === 'ERROR' ||
+          snapshot.emergency_stop ||
+          !snapshot.plant_online,
       }"
     >
-      <span class="msg-prefix">MSG</span>
-      <span class="msg-text">{{ snapshot.status_message || '系统就绪' }}</span>
+      <span class="msg-prefix">{{ uiActionError ? 'ERR' : 'MSG' }}</span>
+      <span class="msg-text">{{ uiActionError || snapshot.status_message || '系统就绪' }}</span>
       <span class="msg-meta">
         <span>CYCLE #{{ snapshot.cycle_count }}</span>
-        <span class="ws-pill" :class="{ live: wsConnected }">
-          {{ wsConnected ? 'gRPC 25Hz' : 'gRPC 轮询' }}
+        <span class="ws-pill" :class="{ live: streamConnected }">
+          {{ streamConnected ? 'gRPC 25Hz' : 'gRPC 轮询' }}
         </span>
       </span>
     </div>
 
-    <!-- 主工作区：左侧程序编辑器 + 右侧监控点动 / 日志管理 -->
-    <main class="main-workspace">
-      <section class="editor-pane">
+    <!-- 主工作区：左侧程序编辑器 + 右侧常驻 3D 机械臂视窗与示教/日志面板 -->
+    <main class="main-workspace" :class="{ 'viewport-expanded': viewportExpanded }">
+      <section v-show="!viewportExpanded" class="editor-pane">
         <ProgramEditor :snapshot="snapshot" />
       </section>
-      <section class="monitor-pane">
-        <div class="right-pane-tabs">
-          <button
-            type="button"
-            class="pane-tab-btn"
-            :class="{ active: rightTab === 'monitor' }"
-            @click="rightTab = 'monitor'"
-          >
-            🎛 示教监控与点动
-          </button>
-          <button
-            type="button"
-            class="pane-tab-btn"
-            :class="{ active: rightTab === 'logs' }"
-            @click="rightTab = 'logs'"
-          >
-            📋 日志管理
-          </button>
+      <section class="right-workbench">
+        <div class="viewport-pane">
+          <RobotViewport3D
+            :snapshot="snapshot"
+            :expanded="viewportExpanded"
+            @toggle-expand="viewportExpanded = !viewportExpanded"
+          />
         </div>
-        <div class="right-pane-body">
-          <MonitorAndJog v-show="rightTab === 'monitor'" :snapshot="snapshot" />
-          <LogPanel v-show="rightTab === 'logs'" />
-        </div>
+        <section v-show="!viewportExpanded" class="monitor-pane">
+          <div class="right-pane-tabs">
+            <button
+              type="button"
+              class="pane-tab-btn"
+              :class="{ active: rightTab === 'monitor' }"
+              @click="rightTab = 'monitor'"
+            >
+              🎛 示教监控与点动
+            </button>
+            <button
+              type="button"
+              class="pane-tab-btn"
+              :class="{ active: rightTab === 'logs' }"
+              @click="rightTab = 'logs'"
+            >
+              📋 日志管理
+            </button>
+          </div>
+          <div class="right-pane-body">
+            <MonitorAndJog v-show="rightTab === 'monitor'" :snapshot="snapshot" />
+            <LogPanel v-show="rightTab === 'logs'" :active="rightTab === 'logs'" />
+          </div>
+        </section>
       </section>
     </main>
   </div>
@@ -213,16 +248,41 @@ onBeforeUnmount(() => {
 
 .main-workspace {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr 1.15fr;
   flex: 1;
   overflow: hidden;
   box-sizing: border-box;
+}
+
+.main-workspace.viewport-expanded {
+  grid-template-columns: 1fr;
 }
 
 .editor-pane {
   height: 100%;
   overflow: hidden;
   border-right: 1px solid #1e293b;
+}
+
+.right-workbench {
+  display: grid;
+  grid-template-rows: minmax(250px, 46%) 1fr;
+  height: 100%;
+  overflow: hidden;
+}
+
+.main-workspace.viewport-expanded .right-workbench {
+  grid-template-rows: 1fr;
+}
+
+.viewport-pane {
+  height: 100%;
+  overflow: hidden;
+  border-bottom: 1px solid #1e293b;
+}
+
+.main-workspace.viewport-expanded .viewport-pane {
+  border-bottom: none;
 }
 
 .monitor-pane {

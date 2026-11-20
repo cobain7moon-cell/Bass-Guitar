@@ -7,6 +7,7 @@ const props = defineProps<{
   snapshot: RobotStateSnapshot;
 }>();
 
+const loadedProgram = ref<string>('');
 const programs = ref<string[]>([]);
 const selectedProgram = ref<string>('');
 const code = ref<string>('');
@@ -91,6 +92,7 @@ async function loadProgramContent(name: string) {
     const detail = await api.fetchProgram(name);
     code.value = detail.code;
     savedCode.value = detail.code;
+    loadedProgram.value = name;
   } catch (err: any) {
     banner.value = { type: 'error', text: `读取程序失败: ${err.message}` };
   } finally {
@@ -99,6 +101,19 @@ async function loadProgramContent(name: string) {
 }
 
 async function onSelectChange() {
+  if (
+    isDirty.value &&
+    loadedProgram.value &&
+    loadedProgram.value !== selectedProgram.value
+  ) {
+    const discard = window.confirm(
+      `当前程序 ${loadedProgram.value} 有未保存的修改，是否放弃修改并切换到 ${selectedProgram.value}？`,
+    );
+    if (!discard) {
+      selectedProgram.value = loadedProgram.value;
+      return;
+    }
+  }
   await loadProgramContent(selectedProgram.value);
 }
 
@@ -119,7 +134,7 @@ async function confirmCreateProgram() {
   }
   showNewDialog.value = false;
 
-  const template = `// Bass 1.0 (UR5e) 工业机器人程序: ${name}
+  const template = `// Bass 1.1 (UR5e) 工业机器人程序: ${name}
 Log("程序启动: ${name}");
 MoveJ(HOME, #{ vel: 50 });
 Wait(0.5);
@@ -336,10 +351,18 @@ onMounted(() => {
 watch(
   () => props.snapshot.active_program,
   (newProg) => {
-    if (newProg && newProg !== selectedProgram.value && programs.value.includes(newProg)) {
-      selectedProgram.value = newProg;
-      loadProgramContent(newProg);
+    if (!newProg || newProg === selectedProgram.value || !programs.value.includes(newProg)) {
+      return;
     }
+    if (isDirty.value) {
+      banner.value = {
+        type: 'info',
+        text: `提示：控制器当前活动程序为 ${newProg}；因编辑器有未保存修改，已保留当前编辑内容。`,
+      };
+      return;
+    }
+    selectedProgram.value = newProg;
+    loadProgramContent(newProg);
   },
 );
 
@@ -552,8 +575,8 @@ watch(currentRunningLine, (line) => {
         <button
           type="button"
           class="ctrl-btn run-btn"
-          :disabled="!selectedProgram || snapshot.emergency_stop || !snapshot.drives_on"
-          title="运行当前选中的 Rhai 程序"
+          :disabled="!selectedProgram || snapshot.emergency_stop || !snapshot.drives_on || snapshot.op_mode !== 'AUTO'"
+          :title="snapshot.op_mode !== 'AUTO' ? '连续 RUN 需先在顶栏切换为 AUTO 模式' : '运行当前选中的 Rhai 程序'"
           @click="handleControl('RUN')"
         >
           ▶ RUN

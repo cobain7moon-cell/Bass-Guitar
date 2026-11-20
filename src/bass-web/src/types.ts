@@ -166,3 +166,67 @@ export interface DoutResp {
   digital_out?: [boolean, boolean, boolean, boolean, boolean, boolean, boolean, boolean];
   error?: string;
 }
+
+export interface MotionTelemetryData {
+  drives_enabled: boolean;
+  estop_active: boolean;
+  speed_override: number;
+  motion_state: MotionState;
+  paused: boolean;
+  active_motion_id: number | null;
+  joint_actual: [number, number, number, number, number, number];
+  joint_cmd: [number, number, number, number, number, number];
+  joint_velocity: [number, number, number, number, number, number];
+  joint_torque: [number, number, number, number, number, number];
+  cart_actual: Pose6D;
+  digital_out: [boolean, boolean, boolean, boolean, boolean, boolean, boolean, boolean];
+  digital_in: number;
+  plant_online: boolean;
+  plant_fault_active: boolean;
+  last_fault_code: number;
+  rtt_ms: number;
+  cycle_count: number;
+  sim_tick: number;
+}
+
+export interface RobotMeshAsset {
+  file: string;
+  rgba: [number, number, number, number];
+}
+
+export interface RobotFrameTransform {
+  pos_mm: [number, number, number];
+  quat_wxyz: [number, number, number, number];
+}
+
+export interface RobotJointConfig {
+  id: number;
+  name: string;
+  body_name: string;
+  pos_mm: [number, number, number];
+  quat_wxyz: [number, number, number, number];
+  axis: [number, number, number];
+  limits_deg: [number, number];
+  meshes: RobotMeshAsset[];
+}
+
+export interface RobotModelConfig {
+  robot_name: string;
+  mesh_dir: string;
+  base_transform: RobotFrameTransform;
+  flange_transform: RobotFrameTransform;
+  tcp_offset_mm: [number, number, number];
+  home_joints_deg: [number, number, number, number, number, number];
+  base_visual: {
+    body_name: string;
+    meshes: RobotMeshAsset[];
+  };
+  joints: RobotJointConfig[];
+  environment?: {
+    worktable?: {
+      pos_mm: [number, number, number];
+      half_size_mm: [number, number, number];
+    };
+    target_marker_pos_mm?: [number, number, number];
+  };
+}

@@ -9,6 +9,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'update:override', val: number): void;
+  (e: 'action-error', message: string): void;
 }>();
 
 const actionLoading = ref(false);
@@ -20,11 +21,18 @@ const opMode = computed(() => props.snapshot.op_mode);
 const interpState = computed(() => props.snapshot.interpreter_state);
 const motionState = computed(() => props.snapshot.motion_state);
 
+function notifyError(err: unknown, fallback: string) {
+  const msg = err instanceof Error ? err.message : fallback;
+  emit('action-error', msg || fallback);
+}
+
 async function toggleMode(mode: OpMode) {
   if (props.snapshot.op_mode === mode) return;
   actionLoading.value = true;
   try {
     await api.setMode(mode);
+  } catch (err) {
+    notifyError(err, '切换操作模式失败');
   } finally {
     actionLoading.value = false;
   }
@@ -34,7 +42,12 @@ async function toggleDrives() {
   if (isEstop.value) return;
   actionLoading.value = true;
   try {
-    await api.setPower(!isDrivesOn.value);
+    const res = await api.setPower(!isDrivesOn.value);
+    if (!res.ok) {
+      emit('action-error', res.error || '伺服上电/下电操作被拒绝');
+    }
+  } catch (err) {
+    notifyError(err, '伺服电源控制请求失败');
   } finally {
     actionLoading.value = false;
   }
@@ -44,6 +57,8 @@ async function toggleEstop() {
   actionLoading.value = true;
   try {
     await api.setEstop(!isEstop.value);
+  } catch (err) {
+    notifyError(err, '急停切换请求失败');
   } finally {
     actionLoading.value = false;
   }
@@ -54,7 +69,11 @@ async function onOverrideChange(event: Event) {
   const val = parseInt(target.value, 10);
   if (!isNaN(val)) {
     emit('update:override', val);
-    await api.setOverride(val);
+    try {
+      await api.setOverride(val);
+    } catch (err) {
+      notifyError(err, '设置速度倍率失败');
+    }
   }
 }
 </script>
@@ -65,7 +84,7 @@ async function onOverrideChange(event: Event) {
     <div class="brand-section">
       <div class="brand-logo">
         <span class="logo-icon">⚡</span>
-        <span class="logo-title">BASS <span class="logo-version">1.0</span></span>
+        <span class="logo-title">BASS <span class="logo-version">1.1</span></span>
       </div>
       <span class="brand-tag">TEACH PENDANT</span>
     </div>

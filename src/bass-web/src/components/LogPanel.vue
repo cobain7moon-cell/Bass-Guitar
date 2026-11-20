@@ -3,6 +3,15 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { LogEntry } from '../types';
 import { api } from '../api/client';
 
+const props = withDefaults(
+  defineProps<{
+    active?: boolean;
+  }>(),
+  {
+    active: true,
+  },
+);
+
 const levelFilter = ref<string>('ALL');
 const categoryFilter = ref<string>('ALL');
 const searchKeyword = ref<string>('');
@@ -15,6 +24,7 @@ const errorText = ref<string | null>(null);
 const listRef = ref<HTMLDivElement | null>(null);
 
 let pollTimer: number | null = null;
+let searchDebounceTimer: number | null = null;
 
 const levelOptions = ['ALL', 'INFO', 'WARN', 'ERROR'];
 const categoryOptions = [
@@ -43,19 +53,32 @@ function formatTime(iso: string): string {
   return iso.slice(idx + 1, idx + 13);
 }
 
-async function refreshLogs(silent = false) {
+async function refreshLogs(silent = false, incremental = false) {
   if (!silent) loading.value = true;
   errorText.value = null;
   try {
+    const afterId = incremental && latestId.value > 0 ? latestId.value : undefined;
     const res = await api.fetchLogs({
       level: levelFilter.value,
       category: categoryFilter.value,
       q: searchKeyword.value,
+      after_id: afterId,
       limit: 300,
     });
-    entries.value = res.entries;
+    if (incremental && afterId !== undefined) {
+      if (res.entries.length > 0) {
+        const merged = [...entries.value, ...res.entries];
+        entries.value = merged.length > 300 ? merged.slice(merged.length - 300) : merged;
+      }
+      if (res.latest_id < latestId.value) {
+        // 日志被清空后全量拉取一次
+        entries.value = res.entries;
+      }
+    } else {
+      entries.value = res.entries;
+    }
     latestId.value = res.latest_id;
-    if (autoScroll.value) {
+    if (autoScroll.value && (!incremental || res.entries.length > 0)) {
       await nextTick();
       if (listRef.value) {
         listRef.value.scrollTop = listRef.value.scrollHeight;
@@ -71,7 +94,9 @@ async function refreshLogs(silent = false) {
 async function handleClear() {
   try {
     await api.clearLogs();
-    await refreshLogs();
+    latestId.value = 0;
+    entries.value = [];
+    await refreshLogs(false, false);
   } catch (err: any) {
     errorText.value = err?.message || '清空日志失败';
   }
@@ -107,14 +132,34 @@ async function handleExport(format: 'jsonl' | 'text') {
 }
 
 watch([levelFilter, categoryFilter], () => {
-  refreshLogs();
+  latestId.value = 0;
+  refreshLogs(false, false);
 });
 
+watch(searchKeyword, () => {
+  if (searchDebounceTimer !== null) {
+    clearTimeout(searchDebounceTimer);
+  }
+  searchDebounceTimer = window.setTimeout(() => {
+    latestId.value = 0;
+    refreshLogs(true, false);
+  }, 300);
+});
+
+watch(
+  () => props.active,
+  (isActive) => {
+    if (isActive) {
+      refreshLogs(true, latestId.value > 0);
+    }
+  },
+);
+
 onMounted(() => {
-  refreshLogs();
+  refreshLogs(false, false);
   pollTimer = window.setInterval(() => {
-    if (autoRefresh.value) {
-      refreshLogs(true);
+    if (props.active && autoRefresh.value) {
+      refreshLogs(true, latestId.value > 0);
     }
   }, 1200);
 });
@@ -123,6 +168,10 @@ onBeforeUnmount(() => {
   if (pollTimer !== null) {
     clearInterval(pollTimer);
     pollTimer = null;
+  }
+  if (searchDebounceTimer !== null) {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = null;
   }
 });
 </script>
