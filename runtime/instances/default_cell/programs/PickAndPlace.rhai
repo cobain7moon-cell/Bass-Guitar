@@ -1,4 +1,4 @@
-// Bass 1.0 (UR5e) 示例程序：循环抓取与放置工艺 (Pick and Place)
+// Bass 1.1 (UR5e) 示例程序：循环抓取与放置工艺 (Pick and Place)
 let pick = Pose(-220.0, 460.0, 260.0, 0.0, 0.0, 180.0);
 let place = Pose(-60.0, 520.0, 260.0, 0.0, 0.0, 180.0);
 let approach_dz = 80.0;
