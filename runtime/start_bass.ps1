@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Bass 1.1 独立一体化系统一键启动脚本 (自包含便携版)
 
@@ -47,6 +47,52 @@ $WebDir = Join-Path $AppRoot "web"
 $SimScript = Join-Path $AppRoot "sim\mujoco_plant.py"
 $InstanceDir = Join-Path $AppRoot "instances\default_cell"
 $ModelJson = Join-Path $InstanceDir "config\robot_model.json"
+
+function Test-TcpPortAvailable {
+    param([int]$Port)
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Any, $Port)
+        $listener.Server.ExclusiveAddressUse = $true
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) {
+            try { $listener.Stop() } catch {}
+        }
+    }
+}
+
+function Find-FreeTcpPort {
+    foreach ($candidate in @(18080, 28080, 38080, 8081, 8088, 18888)) {
+        if (Test-TcpPortAvailable -Port $candidate) {
+            return $candidate
+        }
+    }
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 0)
+        $listener.Start()
+        return ([System.Net.IPEndPoint]$listener.LocalEndpoint).Port
+    } finally {
+        if ($listener) {
+            try { $listener.Stop() } catch {}
+        }
+    }
+}
+
+$ExplicitHttpPort = $PSBoundParameters.ContainsKey('HttpPort')
+if (-not (Test-TcpPortAvailable -Port $HttpPort)) {
+    if ($ExplicitHttpPort) {
+        Write-Error "指定端口 $HttpPort 已被占用或受系统保留限制 (WSAEACCES)，请更换其他 -HttpPort（例如 -HttpPort 18080）。"
+        exit 1
+    }
+    $fallbackPort = Find-FreeTcpPort
+    Write-Host "⚠️ 默认端口 $HttpPort 已被其他进程占用或受系统权限限制，已自动切换至可用端口: $fallbackPort" -ForegroundColor Yellow
+    $HttpPort = $fallbackPort
+}
 
 $UseUdpExternal = $ExternalSim -or $StudioWeb
 $PlantModeLabel = if ($UseUdpExternal) {
